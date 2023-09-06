@@ -10,6 +10,7 @@ import (
 
 type ClientGenerator interface {
 	Clients(version *spec.Version) []generator.CodeFile
+	ErrorsHandler(errors spec.ErrorResponses) *generator.CodeFile
 	ResponseHelperFunctions() *generator.CodeFile
 }
 
@@ -20,10 +21,10 @@ type Generator struct {
 	Modules *Modules
 }
 
-func NewGenerator(modules *Modules) *Generator {
+func NewGenerator(jsonmode string, modules *Modules) *Generator {
 	types := types.NewTypes()
 	return &Generator{
-		models.NewGenerator(&(modules.Modules)),
+		models.NewGenerator(jsonmode, &(modules.Modules)),
 		NewNetHttpGenerator(modules, types),
 		types,
 		modules,
@@ -38,7 +39,9 @@ func (g *Generator) AllStaticFiles() []generator.CodeFile {
 	return []generator.CodeFile{
 		*g.EnumsHelperFunctions(),
 		*g.EmptyType(),
-		*g.Converter(),
+		*g.TypeConverter(),
+		*g.Params(),
+		*g.FormDataParams(),
 		*g.ResponseHelperFunctions(),
 	}
 }

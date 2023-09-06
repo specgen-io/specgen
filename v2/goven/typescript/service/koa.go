@@ -5,6 +5,7 @@ import (
 	"github.com/pinzolo/casee"
 	"github.com/specgen-io/specgen/v2/goven/generator"
 	"github.com/specgen-io/specgen/v2/goven/spec"
+	"github.com/specgen-io/specgen/v2/goven/typescript/types"
 	"github.com/specgen-io/specgen/v2/goven/typescript/validations"
 	"github.com/specgen-io/specgen/v2/goven/typescript/writer"
 	"strings"
@@ -62,13 +63,13 @@ func (g *koaGenerator) VersionRouting(version *spec.Version) *generator.CodeFile
 	routingModule := g.Modules.Routing(version)
 
 	w := writer.New(routingModule)
-	w.Line(`import Router from '@koa/router'`)
-	w.Line(`import { ExtendableContext } from 'koa'`)
-	w.Line(`import {zipHeaders} from '%s'`, g.Modules.Params.GetImport(routingModule))
-	w.Line(`import * as t from '%s'`, g.Modules.Validation.GetImport(routingModule))
-	w.Line(`import * as models from '%s'`, g.Modules.Models(version).GetImport(routingModule))
-	w.Line(`import * as errors from '%s'`, g.Modules.Errors.GetImport(routingModule))
-	w.Line(`import * as responses from '%s'`, g.Modules.Responses.GetImport(routingModule))
+	w.Imports.Default(`@koa/router`, `Router`)
+	w.Imports.LibNames(`koa`, `ExtendableContext`)
+	w.Imports.Names(g.Modules.Params, `zipHeaders`)
+	w.Imports.Star(g.Modules.Validation, `t`)
+	w.Imports.Star(g.Modules.Models(version), types.ModelsPackage)
+	w.Imports.Star(g.Modules.ErrorsModels, types.ErrorsPackage)
+	w.Imports.Star(g.Modules.Responses, `responses`)
 
 	for _, api := range version.Http.Apis {
 		w.Line("import {%s} from './%s'", serviceInterfaceName(&api), g.Modules.ServiceApi(&api).GetImport(routingModule))
@@ -109,15 +110,15 @@ func getKoaUrl(endpoint spec.Endpoint) string {
 
 func (g *koaGenerator) response(w *writer.Writer, response *spec.Response, dataParam string) {
 	w.Line("ctx.status = %s", spec.HttpStatusCode(response.Name))
-	if response.BodyIs(spec.BodyEmpty) {
+	if response.Body.Is(spec.ResponseBodyEmpty) {
 		w.Line("return")
 	}
-	if response.BodyIs(spec.BodyString) {
+	if response.Body.Is(spec.ResponseBodyString) {
 		w.Line("ctx.body = %s", dataParam)
 		w.Line("return")
 	}
-	if response.BodyIs(spec.BodyJson) {
-		w.Line("ctx.body = t.encode(%s, %s)", g.Validation.RuntimeType(&response.Type.Definition), dataParam)
+	if response.Body.Is(spec.ResponseBodyJson) {
+		w.Line("ctx.body = t.encode(%s, %s)", g.Validation.RuntimeType(&response.Body.Type.Definition), dataParam)
 		w.Line("return")
 	}
 }
@@ -136,12 +137,12 @@ func (g *koaGenerator) responses(w *writer.Writer, responses spec.OperationRespo
 }
 
 func (g *koaGenerator) checkContentType(w *writer.Writer, operation *spec.NamedOperation) {
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`if (!responses.assertContentType(ctx, "text/plain")) {`)
 		w.Line(`  return`)
 		w.Line(`}`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`if (!responses.assertContentType(ctx, "application/json")) {`)
 		w.Line(`  return`)
 		w.Line(`}`)
@@ -199,10 +200,10 @@ func (g *koaGenerator) queryParsing(w *writer.Writer, operation *spec.NamedOpera
 }
 
 func (g *koaGenerator) bodyParsing(w *writer.Writer, operation *spec.NamedOperation) {
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`const body: string = ctx.request.rawBody`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line("const bodyDecode = t.decodeR(%s, ctx.request.body)", g.Validation.RuntimeType(&operation.Body.Type.Definition))
 		w.Line("if (bodyDecode.error) {")
 		g.respondBadRequest(w.Indented(), "BODY", "bodyDecode.error", "Failed to parse body")
@@ -228,9 +229,9 @@ func (g *koaGenerator) respondInternalServerError(w *writer.Writer) {
 
 func (g *koaGenerator) Responses() *generator.CodeFile {
 	w := writer.New(g.Modules.Responses)
-	w.Line(`import { ExtendableContext } from 'koa'`)
-	w.Line(`import * as t from '%s'`, g.Modules.Validation.GetImport(g.Modules.Responses))
-	w.Line(`import * as errors from '%s'`, g.Modules.Errors.GetImport(g.Modules.Responses))
+	w.Imports.LibNames(`koa`, `ExtendableContext`)
+	w.Imports.Star(g.Modules.Validation, `t`)
+	w.Imports.Star(g.Modules.ErrorsModels, types.ErrorsPackage)
 
 	w.EmptyLine()
 	code := `

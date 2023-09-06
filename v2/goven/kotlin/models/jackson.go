@@ -3,7 +3,6 @@ package models
 import (
 	"fmt"
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/kotlin/imports"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/packages"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/types"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/writer"
@@ -31,10 +30,8 @@ func (g *JacksonGenerator) ErrorModels(httperrors *spec.HttpErrors) []generator.
 
 func (g *JacksonGenerator) models(models []*spec.NamedModel, modelsPackage packages.Package) *generator.CodeFile {
 	w := writer.New(modelsPackage, `models`)
-	imports := imports.New()
-	imports.Add(g.modelsDefinitionsImports()...)
-	imports.Add(g.Types.Imports()...)
-	imports.Write(w)
+	w.Imports.Add(g.modelsDefinitionsImports()...)
+	w.Imports.Add(g.Types.Imports()...)
 
 	for _, model := range models {
 		w.EmptyLine()
@@ -57,7 +54,7 @@ func jacksonPropertyAnnotation(field *spec.NamedDefinition) string {
 	return fmt.Sprintf(`@JsonProperty(value = "%s", required = %s)`, field.Name.Source, required)
 }
 
-func (g *JacksonGenerator) modelObject(w generator.Writer, model *spec.NamedModel) {
+func (g *JacksonGenerator) modelObject(w *writer.Writer, model *spec.NamedModel) {
 	className := model.Name.PascalCase()
 	w.Line(`data class %s(`, className)
 	for _, field := range model.Object.Fields {
@@ -67,7 +64,7 @@ func (g *JacksonGenerator) modelObject(w generator.Writer, model *spec.NamedMode
 	w.Line(`)`)
 }
 
-func (g *JacksonGenerator) modelEnum(w generator.Writer, model *spec.NamedModel) {
+func (g *JacksonGenerator) modelEnum(w *writer.Writer, model *spec.NamedModel) {
 	enumName := model.Name.PascalCase()
 	w.Line(`enum class %s {`, enumName)
 	for _, enumItem := range model.Enum.Items {
@@ -76,7 +73,7 @@ func (g *JacksonGenerator) modelEnum(w generator.Writer, model *spec.NamedModel)
 	w.Line(`}`)
 }
 
-func (g *JacksonGenerator) modelOneOf(w generator.Writer, model *spec.NamedModel) {
+func (g *JacksonGenerator) modelOneOf(w *writer.Writer, model *spec.NamedModel) {
 	interfaceName := model.Name.PascalCase()
 	if model.OneOf.Discriminator != nil {
 		w.Line(`@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "%s")`, *model.OneOf.Discriminator)
@@ -96,11 +93,11 @@ func (g *JacksonGenerator) modelOneOf(w generator.Writer, model *spec.NamedModel
 	w.Line(`}`)
 }
 
-func (g *JacksonGenerator) JsonRead(varJson string, typ *spec.TypeDef) string {
-	return fmt.Sprintf(`read(%s, object : TypeReference<%s>() {})`, varJson, g.Types.Kotlin(typ))
+func (g *JacksonGenerator) ReadJson(varJson string, typ *spec.TypeDef) string {
+	return fmt.Sprintf(`read(%s)`, varJson)
 }
 
-func (g *JacksonGenerator) JsonWrite(varData string, typ *spec.TypeDef) string {
+func (g *JacksonGenerator) WriteJson(varData string, typ *spec.TypeDef) string {
 	return fmt.Sprintf(`write(%s)`, varData)
 }
 
@@ -134,7 +131,7 @@ import com.fasterxml.jackson.databind.exc.InvalidFormatException
 import [[.ErrorsModelsPackage]].*
 import [[.JsonPackage]].*
 
-object ValidationErrorsHelpers {
+object [[.ClassName]] {
     fun extractValidationErrors(exception: JsonParseException): List<ValidationError>? {
         val causeException = exception.cause
         if (causeException is InvalidFormatException) {
@@ -170,6 +167,7 @@ func (g *JacksonGenerator) JsonHelpers() []generator.CodeFile {
 
 	files = append(files, *g.json())
 	files = append(files, *g.jsonParseException())
+	files = append(files, *g.jsonWriteException())
 	files = append(files, g.setupLibrary()...)
 
 	return files
@@ -180,20 +178,52 @@ func (g *JacksonGenerator) json() *generator.CodeFile {
 	w.Lines(`
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
-import java.io.IOException
+import java.io.*
 
-class Json(private val objectMapper: ObjectMapper) {
+class [[.ClassName]](private val objectMapper: ObjectMapper) {
 	fun write(body: Any): String {
 		return try {
 			objectMapper.writeValueAsString(body)
 		} catch (exception: Exception) {
-			throw RuntimeException(exception)
+			throw JsonWriteException(exception)
 		}
+	}
+
+	fun <T> read(jsonStr: String, type: Class<T>): T {
+        return try {
+            objectMapper.readValue(jsonStr, type)
+        } catch (exception: IOException) {
+            throw JsonParseException(exception)
+        }
+    }
+
+    fun <T> read(reader: Reader, type: Class<T>): T {
+        return try {
+            objectMapper.readValue(reader, type)
+        } catch (exception: IOException) {
+            throw JsonParseException(exception)
+        }
+    }
+
+	inline fun <reified T> read(jsonStr: String): T {
+		return read(jsonStr, object: TypeReference<T>(){})
 	}
 
 	fun <T> read(jsonStr: String, typeReference: TypeReference<T>): T {
 		return try {
 			objectMapper.readValue(jsonStr, typeReference)
+		} catch (exception: IOException) {
+			throw JsonParseException(exception)
+		}
+	}
+
+	inline fun <reified T> read(reader: Reader): T {
+		return read(reader, object: TypeReference<T>(){})
+	}
+
+	fun <T> read(reader: Reader, typeReference: TypeReference<T>): T {
+		return try {
+			objectMapper.readValue(reader, typeReference)
 		} catch (exception: IOException) {
 			throw JsonParseException(exception)
 		}
@@ -206,8 +236,17 @@ class Json(private val objectMapper: ObjectMapper) {
 func (g *JacksonGenerator) jsonParseException() *generator.CodeFile {
 	w := writer.New(g.Packages.Json, `JsonParseException`)
 	w.Lines(`
-class JsonParseException(exception: Throwable) :
-	RuntimeException("Failed to parse body: " + exception.message, exception)
+class [[.ClassName]](exception: Throwable) :
+	RuntimeException("Failed to parse JSON: ${exception.message}", exception)
+`)
+	return w.ToCodeFile()
+}
+
+func (g *JacksonGenerator) jsonWriteException() *generator.CodeFile {
+	w := writer.New(g.Packages.Json, `JsonWriteException`)
+	w.Lines(`
+class [[.ClassName]](exception: Throwable) :
+	RuntimeException("Failed to write JSON: ${exception.message}", exception)
 `)
 	return w.ToCodeFile()
 }
@@ -230,30 +269,10 @@ fun setupObjectMapper(objectMapper: ObjectMapper): ObjectMapper {
 	return []generator.CodeFile{*w.ToCodeFile()}
 }
 
-func (g *JacksonGenerator) CreateJsonHelper(name string) string {
-	return fmt.Sprintf(`
-val objectMapper = jacksonObjectMapper()
-setupObjectMapper(objectMapper)
-%s = Json(objectMapper)
-`, name)
+func (g *JacksonGenerator) JsonMapperInit() string {
+	return fmt.Sprintf(`setupObjectMapper(jacksonObjectMapper())`)
 }
 
-//TODO - customize mapper for different json libs
-func (g *JacksonGenerator) JsonMapperConfig(w generator.Writer) {
-	w.Lines(`
-class ObjectMapperConfig {
-	@Bean
-	@Replaces(ObjectMapper::class)
-	fun objectMapper(): ObjectMapper {
-		val objectMapper = jacksonObjectMapper()
-		setupObjectMapper(objectMapper)
-		return objectMapper
-	}
-
-	@Bean
-	fun json(): Json {
-		return Json(objectMapper())
-	}
-}
-`)
+func (g *JacksonGenerator) JsonMapperType() string {
+	return `ObjectMapper`
 }

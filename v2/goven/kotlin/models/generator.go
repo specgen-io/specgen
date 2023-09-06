@@ -12,10 +12,11 @@ type Generator interface {
 	ErrorModels(httperrors *spec.HttpErrors) []generator.CodeFile
 	ModelsUsageImports() []string
 	ValidationErrorsHelpers() *generator.CodeFile
-	JsonRead(varJson string, typ *spec.TypeDef) string
-	JsonWrite(varData string, typ *spec.TypeDef) string
+	ReadJson(varJson string, typ *spec.TypeDef) string
+	WriteJson(varData string, typ *spec.TypeDef) string
 	JsonHelpers() []generator.CodeFile
-	CreateJsonHelper(name string) string
+	JsonMapperInit() string
+	JsonMapperType() string
 }
 
 func NewGenerator(jsonlib string, packages *Packages) Generator {

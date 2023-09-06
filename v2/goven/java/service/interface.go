@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/java/imports"
 	"github.com/specgen-io/specgen/v2/goven/java/types"
 	"github.com/specgen-io/specgen/v2/goven/java/writer"
 	"github.com/specgen-io/specgen/v2/goven/spec"
@@ -26,10 +25,8 @@ func (g *Generator) ServicesInterfaces(version *spec.Version) []generator.CodeFi
 
 func (g *Generator) serviceInterface(api *spec.Api) *generator.CodeFile {
 	w := writer.New(g.Packages.ServicesApi(api), serviceInterfaceName(api))
-	imports := imports.New()
-	imports.Add(g.Types.Imports()...)
-	imports.Add(g.Packages.Models(api.InHttp.InVersion).PackageStar)
-	imports.Write(w)
+	w.Imports.Add(g.Types.Imports()...)
+	w.Imports.Star(g.Packages.Models(api.InHttp.InVersion))
 	w.EmptyLine()
 	w.Line(`public interface [[.ClassName]] {`)
 	for _, operation := range api.Operations {
@@ -42,7 +39,7 @@ func (g *Generator) serviceInterface(api *spec.Api) *generator.CodeFile {
 func operationSignature(types *types.Types, operation *spec.NamedOperation) string {
 	if len(operation.Responses) == 1 {
 		for _, response := range operation.Responses {
-			return fmt.Sprintf(`%s %s(%s)`, types.Java(&response.Type.Definition), operation.Name.CamelCase(), strings.Join(operationParameters(operation, types), ", "))
+			return fmt.Sprintf(`%s %s(%s)`, types.ResponseBodyJavaType(&response.Body), operation.Name.CamelCase(), strings.Join(operationParameters(operation, types), ", "))
 		}
 	}
 	if len(operation.Responses) > 1 {
@@ -53,7 +50,7 @@ func operationSignature(types *types.Types, operation *spec.NamedOperation) stri
 
 func operationParameters(operation *spec.NamedOperation, types *types.Types) []string {
 	params := []string{}
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		params = append(params, fmt.Sprintf("%s body", types.Java(&operation.Body.Type.Definition)))
 	}
 	for _, param := range operation.QueryParams {

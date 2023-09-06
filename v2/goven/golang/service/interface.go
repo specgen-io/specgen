@@ -2,7 +2,7 @@ package service
 
 import (
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/golang/types"
+	"github.com/specgen-io/specgen/v2/goven/golang/walkers"
 	"github.com/specgen-io/specgen/v2/goven/golang/writer"
 	"github.com/specgen-io/specgen/v2/goven/spec"
 )
@@ -16,27 +16,36 @@ func (g *Generator) ServicesInterfaces(version *spec.Version) []generator.CodeFi
 }
 
 func (g *Generator) serviceInterface(api *spec.Api) *generator.CodeFile {
-	w := writer.New(g.Modules.ServicesApi(api), "service.go")
+	w := writer.New(g.Modules.ServicesApi(api), "server.go")
 
-	w.Imports.AddApiTypes(api)
-	for _, operation := range api.Operations {
-		if len(operation.Responses) > 1 && types.OperationHasType(&operation, spec.TypeEmpty) {
-			w.Imports.Module(g.Modules.Empty)
-		}
+	if walkers.ApiHasType(api, spec.TypeDate) {
+		w.Imports.Add("cloud.google.com/go/civil")
 	}
-	//TODO - potential bug, could be unused import
-	w.Imports.Module(g.Modules.Models(api.InHttp.InVersion))
-	if usingErrorModels(api) {
+	if walkers.ApiHasType(api, spec.TypeJson) {
+		w.Imports.Add("encoding/json")
+	}
+	if walkers.ApiHasType(api, spec.TypeUuid) {
+		w.Imports.Add("github.com/google/uuid")
+	}
+	if walkers.ApiHasType(api, spec.TypeDecimal) {
+		w.Imports.Add("github.com/shopspring/decimal")
+	}
+	if walkers.ApiHasMultiResponsesWithEmptyBody(api) {
+		w.Imports.Module(g.Modules.Empty)
+	}
+	if walkers.ApiIsUsingModels(api) {
+		w.Imports.Module(g.Modules.Models(api.InHttp.InVersion))
+	}
+	if walkers.ApiIsUsingErrorModels(api) {
 		w.Imports.Module(g.Modules.HttpErrorsModels)
 	}
 
 	for _, operation := range api.Operations {
 		if len(operation.Responses) > 1 {
+			g.Response(w, &operation)
 			w.EmptyLine()
-			Response(w, g.Types, &operation)
 		}
 	}
-	w.EmptyLine()
 	w.Line(`type %s interface {`, serviceInterfaceName)
 	for _, operation := range api.Operations {
 		w.Line(`  %s`, g.operationSignature(&operation, nil))
@@ -47,15 +56,3 @@ func (g *Generator) serviceInterface(api *spec.Api) *generator.CodeFile {
 }
 
 const serviceInterfaceName = "Service"
-
-func usingErrorModels(api *spec.Api) bool {
-	foundErrorModels := false
-	walk := spec.NewWalker().
-		OnTypeDef(func(typ *spec.TypeDef) {
-			if typ.Info.Model != nil && typ.Info.Model.InHttpErrors != nil {
-				foundErrorModels = true
-			}
-		})
-	walk.Api(api)
-	return foundErrorModels
-}

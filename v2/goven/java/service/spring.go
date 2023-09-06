@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/pinzolo/casee"
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/java/imports"
 	"github.com/specgen-io/specgen/v2/goven/java/models"
 	"github.com/specgen-io/specgen/v2/goven/java/types"
 	"github.com/specgen-io/specgen/v2/goven/java/writer"
@@ -46,15 +45,13 @@ func (g *SpringGenerator) ServiceImports() []string {
 	}
 }
 
-func (g *SpringGenerator) ExceptionController(responses *spec.Responses) *generator.CodeFile {
+func (g *SpringGenerator) ExceptionController(responses *spec.ErrorResponses) *generator.CodeFile {
 	w := writer.New(g.Packages.RootControllers, `ExceptionController`)
-	imports := imports.New()
-	imports.Add(g.ServiceImports()...)
-	imports.Add(g.Packages.Json.PackageStar)
-	imports.Add(g.Packages.ErrorsModels.PackageStar)
-	imports.AddStatic(g.Packages.Errors.Subpackage(ErrorsHelpersClassName).PackageStar)
-	imports.AddStatic(`org.apache.tomcat.util.http.fileupload.FileUploadBase.CONTENT_TYPE`)
-	imports.Write(w)
+	w.Imports.Add(g.ServiceImports()...)
+	w.Imports.Star(g.Packages.Json)
+	w.Imports.Star(g.Packages.ErrorsModels)
+	w.Imports.StaticStar(g.Packages.Errors.Subpackage(ErrorsHelpersClassName))
+	w.Imports.AddStatic(`org.apache.tomcat.util.http.fileupload.FileUploadBase.CONTENT_TYPE`)
 	w.EmptyLine()
 	w.Line(`@ControllerAdvice`)
 	w.Line(`public class [[.ClassName]] {`)
@@ -68,7 +65,7 @@ func (g *SpringGenerator) ExceptionController(responses *spec.Responses) *genera
 	return w.ToCodeFile()
 }
 
-func (g *SpringGenerator) errorHandler(w generator.Writer, errors spec.Responses) {
+func (g *SpringGenerator) errorHandler(w *writer.Writer, errors spec.ErrorResponses) {
 	notFoundError := errors.GetByStatusName(spec.HttpStatusNotFound)
 	badRequestError := errors.GetByStatusName(spec.HttpStatusBadRequest)
 	internalServerError := errors.GetByStatusName(spec.HttpStatusInternalServerError)
@@ -76,31 +73,29 @@ func (g *SpringGenerator) errorHandler(w generator.Writer, errors spec.Responses
 	w.Line(`public ResponseEntity<String> error(Throwable exception) {`)
 	w.Line(`  var notFoundError = getNotFoundError(exception);`)
 	w.Line(`  if (notFoundError != null) {`)
-	g.processResponse(w.IndentedWith(2), notFoundError, "notFoundError")
+	g.processResponse(w.IndentedWith(2), &notFoundError.Response, "notFoundError")
 	w.Line(`  }`)
 	w.Line(`  var badRequestError = getBadRequestError(exception);`)
 	w.Line(`  if (badRequestError != null) {`)
-	g.processResponse(w.IndentedWith(2), badRequestError, "badRequestError")
+	g.processResponse(w.IndentedWith(2), &badRequestError.Response, "badRequestError")
 	w.Line(`  }`)
 	w.Line(`  var internalServerError = new InternalServerError(exception.getMessage());`)
-	g.processResponse(w.IndentedWith(1), internalServerError, "internalServerError")
+	g.processResponse(w.IndentedWith(1), &internalServerError.Response, "internalServerError")
 	w.Line(`}`)
 }
 
 func (g *SpringGenerator) serviceController(api *spec.Api) *generator.CodeFile {
 	w := writer.New(g.Packages.Controllers(api.InHttp.InVersion), controllerName(api))
-	imports := imports.New()
-	imports.Add(g.ServiceImports()...)
-	imports.Add(`javax.servlet.http.HttpServletRequest`)
-	imports.Add(g.Packages.ContentType.PackageStar)
-	imports.Add(g.Packages.Json.PackageStar)
-	imports.Add(g.Packages.ErrorsModels.PackageStar)
-	imports.Add(g.Packages.Models(api.InHttp.InVersion).PackageStar)
-	imports.Add(g.Packages.ServicesApi(api).PackageStar)
-	imports.Add(g.Models.ModelsUsageImports()...)
-	imports.Add(g.Types.Imports()...)
-	imports.AddStatic(`org.apache.tomcat.util.http.fileupload.FileUploadBase.CONTENT_TYPE`)
-	imports.Write(w)
+	w.Imports.Add(g.ServiceImports()...)
+	w.Imports.Add(`javax.servlet.http.HttpServletRequest`)
+	w.Imports.Star(g.Packages.ContentType)
+	w.Imports.Star(g.Packages.Json)
+	w.Imports.Star(g.Packages.ErrorsModels)
+	w.Imports.Star(g.Packages.Models(api.InHttp.InVersion))
+	w.Imports.Star(g.Packages.ServicesApi(api))
+	w.Imports.Add(g.Models.ModelsUsageImports()...)
+	w.Imports.Add(g.Types.Imports()...)
+	w.Imports.AddStatic(`org.apache.tomcat.util.http.fileupload.FileUploadBase.CONTENT_TYPE`)
 	w.EmptyLine()
 	w.Line(`@RestController("%s")`, versionControllerName(controllerName(api), api.InHttp.InVersion))
 	w.Line(`public class [[.ClassName]] {`)
@@ -120,7 +115,7 @@ func (g *SpringGenerator) serviceController(api *spec.Api) *generator.CodeFile {
 	return w.ToCodeFile()
 }
 
-func (g *SpringGenerator) controllerMethod(w generator.Writer, operation *spec.NamedOperation) {
+func (g *SpringGenerator) controllerMethod(w *writer.Writer, operation *spec.NamedOperation) {
 	methodName := operation.Endpoint.Method
 	url := operation.FullUrl()
 	w.Line(`@%sMapping("%s")`, casee.ToPascalCase(methodName), url)
@@ -134,20 +129,20 @@ func (g *SpringGenerator) controllerMethod(w generator.Writer, operation *spec.N
 	w.Line(`}`)
 }
 
-func (g *SpringGenerator) parseBody(w generator.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar string) {
-	if operation.BodyIs(spec.BodyString) {
+func (g *SpringGenerator) parseBody(w *writer.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar string) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`ContentType.check(request, MediaType.TEXT_PLAIN);`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`ContentType.check(request, MediaType.APPLICATION_JSON);`)
 		typ := g.Types.Java(&operation.Body.Type.Definition)
 		w.Line(`%s %s = json.%s;`, typ, bodyJsonVar, g.Models.JsonRead(bodyStringVar, &operation.Body.Type.Definition))
 	}
 }
 
-func (g *SpringGenerator) serviceCall(w generator.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar, resultVarName string) {
+func (g *SpringGenerator) serviceCall(w *writer.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar, resultVarName string) {
 	serviceCall := fmt.Sprintf(`%s.%s(%s)`, serviceVarName(operation.InApi), operation.Name.CamelCase(), strings.Join(addServiceMethodParams(operation, bodyStringVar, bodyJsonVar), ", "))
-	if len(operation.Responses) == 1 && operation.Responses[0].BodyIs(spec.BodyEmpty) {
+	if len(operation.Responses) == 1 && operation.Responses[0].Body.Is(spec.ResponseBodyEmpty) {
 		w.Line(`%s;`, serviceCall)
 	} else {
 		w.Line(`var %s = %s;`, resultVarName, serviceCall)
@@ -157,7 +152,7 @@ func (g *SpringGenerator) serviceCall(w generator.Writer, operation *spec.NamedO
 	}
 }
 
-func (g *SpringGenerator) processResponses(w generator.Writer, operation *spec.NamedOperation, resultVarName string) {
+func (g *SpringGenerator) processResponses(w *writer.Writer, operation *spec.NamedOperation, resultVarName string) {
 	if len(operation.Responses) == 1 {
 		g.processResponse(w, &operation.Responses[0].Response, resultVarName)
 	}
@@ -172,19 +167,19 @@ func (g *SpringGenerator) processResponses(w generator.Writer, operation *spec.N
 	}
 }
 
-func (g *SpringGenerator) processResponse(w generator.Writer, response *spec.Response, bodyVar string) {
-	if response.BodyIs(spec.BodyEmpty) {
+func (g *SpringGenerator) processResponse(w *writer.Writer, response *spec.Response, bodyVar string) {
+	if response.Body.Is(spec.ResponseBodyEmpty) {
 		w.Line(`logger.info("Completed request with status code: {}", HttpStatus.%s);`, response.Name.UpperCase())
 		w.Line(`return new ResponseEntity<>(HttpStatus.%s);`, response.Name.UpperCase())
 	}
-	if response.BodyIs(spec.BodyString) {
+	if response.Body.Is(spec.ResponseBodyString) {
 		w.Line(`HttpHeaders headers = new HttpHeaders();`)
 		w.Line(`headers.add(CONTENT_TYPE, "text/plain");`)
 		w.Line(`logger.info("Completed request with status code: {}", HttpStatus.%s);`, response.Name.UpperCase())
 		w.Line(`return new ResponseEntity<>(%s, headers, HttpStatus.%s);`, bodyVar, response.Name.UpperCase())
 	}
-	if response.BodyIs(spec.BodyJson) {
-		w.Line(`var bodyJson = json.%s;`, g.Models.JsonWrite(bodyVar, &response.Type.Definition))
+	if response.Body.Is(spec.ResponseBodyJson) {
+		w.Line(`var bodyJson = json.%s;`, g.Models.JsonWrite(bodyVar, &response.Body.Type.Definition))
 		w.Line(`HttpHeaders headers = new HttpHeaders();`)
 		w.Line(`headers.add(CONTENT_TYPE, "application/json");`)
 		w.Line(`logger.info("Completed request with status code: {}", HttpStatus.%s);`, response.Name.UpperCase())
@@ -304,7 +299,7 @@ public class [[.ClassName]] {
 func springMethodParams(operation *spec.NamedOperation, types *types.Types) []string {
 	methodParams := []string{"HttpServletRequest request"}
 
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		methodParams = append(methodParams, "@RequestBody String bodyStr")
 	}
 	methodParams = append(methodParams, generateSpringMethodParam(operation.QueryParams, "RequestParam", types)...)

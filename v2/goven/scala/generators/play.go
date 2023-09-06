@@ -98,7 +98,7 @@ func operationSignature(operation *spec.NamedOperation) string {
 	for _, param := range operation.HeaderParams {
 		params = append(params, fmt.Sprintf(`%s: %s`, param.Name.CamelCase(), ScalaType(&param.Type.Definition)))
 	}
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		params = append(params, fmt.Sprintf(`body: %s`, ScalaType(&operation.Body.Type.Definition)))
 	}
 	for _, param := range operation.Endpoint.UrlParams {
@@ -156,7 +156,7 @@ func generateApiImpl(api spec.Api, thepackage, apiPackage, modelsPackage package
 	return w.ToCodeFile()
 }
 
-func addParamsParsing(w generator.Writer, params []spec.NamedParam, location string, paramsVar string, valuesVar string) {
+func addParamsParsing(w *writer.Writer, params []spec.NamedParam, location string, paramsVar string, valuesVar string) {
 	if params != nil && len(params) > 0 {
 		w.Line(`val %s = new StringParamsReader(%s, %s)`, paramsVar, location, valuesVar)
 		for _, param := range params {
@@ -268,11 +268,11 @@ func generateApiController(api *spec.Api, thepackage, apiPackage, modelsPackage,
 	return w.ToCodeFile()
 }
 
-func generateControllerMethod(w generator.Writer, operation *spec.NamedOperation) {
+func generateControllerMethod(w *writer.Writer, operation *spec.NamedOperation) {
 	params := getControllerParams(operation, true)
 
 	payload := ``
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		payload = `(parse.byteString)`
 	}
 
@@ -282,7 +282,7 @@ func generateControllerMethod(w generator.Writer, operation *spec.NamedOperation
 	w.Line(`}`)
 }
 
-func generateControllerMethodRequest(w generator.Writer, operation *spec.NamedOperation) {
+func generateControllerMethodRequest(w *writer.Writer, operation *spec.NamedOperation) {
 	parseParams := getParsedOperationParams(operation)
 	allParams := getOperationCallParams(operation)
 
@@ -306,41 +306,41 @@ func generateControllerMethodRequest(w generator.Writer, operation *spec.NamedOp
 	}
 }
 
-func genBodyParsing(w generator.Writer, operation *spec.NamedOperation) {
-	if operation.BodyIs(spec.BodyString) {
+func genBodyParsing(w *writer.Writer, operation *spec.NamedOperation) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`checkContentType(request, "text/plain")`)
 		w.Line(`val body = request.body.utf8String`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`checkContentType(request, "application/json")`)
 		w.Line(`val body = Jsoner.readThrowing[%s](request.body.utf8String)`, ScalaType(&operation.Body.Type.Definition))
 	}
 }
 
 func getPlayStatus(response *spec.Response) string {
-	if response.BodyIs(spec.BodyEmpty) {
+	if response.Body.Is(spec.ResponseBodyEmpty) {
 		return fmt.Sprintf(`new Status(%s)`, spec.HttpStatusCode(response.Name))
 	}
-	if response.BodyIs(spec.BodyString) {
+	if response.Body.Is(spec.ResponseBodyString) {
 		return fmt.Sprintf(`new Status(%s)(body)`, spec.HttpStatusCode(response.Name))
 	} else {
 		return fmt.Sprintf(`new Status(%s)(Jsoner.write(body)).as("application/json")`, spec.HttpStatusCode(response.Name))
 	}
 }
 
-func genMatchResult(w generator.Writer, operation *spec.NamedOperation, resultVarName string) {
+func genMatchResult(w *writer.Writer, operation *spec.NamedOperation, resultVarName string) {
 	w.Line(`%s.map {`, resultVarName)
 	w.Indent()
 	if len(operation.Responses) == 1 {
 		r := operation.Responses[0]
-		if !r.Type.Definition.IsEmpty() {
+		if !r.Body.IsEmpty() {
 			w.Line(`body => %s`, getPlayStatus(&r.Response))
 		} else {
 			w.Line(`_ => %s`, getPlayStatus(&r.Response))
 		}
 	} else {
 		for _, r := range operation.Responses {
-			if !r.Type.Definition.IsEmpty() {
+			if !r.Body.IsEmpty() {
 				w.Line(`case %s.%s(body) => %s`, responseType(operation), r.Name.PascalCase(), getPlayStatus(&r.Response))
 			} else {
 				w.Line(`case %s.%s() => %s`, responseType(operation), r.Name.PascalCase(), getPlayStatus(&r.Response))
@@ -358,7 +358,7 @@ func getOperationCallParams(operation *spec.NamedOperation) []string {
 			params = append(params, param.Name.CamelCase())
 		}
 	}
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		params = append(params, "body")
 	}
 	for _, param := range operation.Endpoint.UrlParams {
@@ -384,7 +384,7 @@ func getParsedOperationParams(operation *spec.NamedOperation) []string {
 			params = append(params, param.Name.CamelCase())
 		}
 	}
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		params = append(params, "body")
 	}
 	return params
@@ -419,7 +419,7 @@ func generateMainRouter(versions []spec.Version, thepackage packages.Package) *g
 	return w.ToCodeFile()
 }
 
-func generateSpecRouterMainClass(w generator.Writer, versions []spec.Version) {
+func generateSpecRouterMainClass(w *writer.Writer, versions []spec.Version) {
 	params := []string{}
 	for _, version := range versions {
 		for _, api := range version.Http.Apis {
@@ -451,7 +451,7 @@ func routeName(operationName spec.Name) string {
 	return fmt.Sprintf("route%s", operationName.PascalCase())
 }
 
-func generateApiRouterClass(w generator.Writer, api *spec.Api) {
+func generateApiRouterClass(w *writer.Writer, api *spec.Api) {
 	w.Line(`class %s @Inject()(Action: DefaultActionBuilder, controller: %s) extends SimpleRouter {`, routerType(api.Name), controllerType(api.Name))
 
 	for _, operation := range api.Operations {

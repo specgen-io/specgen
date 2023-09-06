@@ -3,20 +3,9 @@ package service
 import (
 	"fmt"
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/golang/types"
 	"github.com/specgen-io/specgen/v2/goven/golang/writer"
 	"github.com/specgen-io/specgen/v2/goven/spec"
 )
-
-func Response(w *writer.Writer, types *types.Types, operation *spec.NamedOperation) {
-	w.Line(`type %s struct {`, responseTypeName(operation))
-	w.Indent()
-	for _, response := range operation.Responses {
-		w.LineAligned(`%s %s`, response.Name.PascalCase(), types.GoType(spec.Nullable(&response.Type.Definition)))
-	}
-	w.Unindent()
-	w.Line(`}`)
-}
 
 func responseTypeName(operation *spec.NamedOperation) string {
 	return fmt.Sprintf(`%sResponse`, operation.Name.PascalCase())
@@ -34,7 +23,29 @@ func respondEmpty(logFields, resVar, statusCode string) string {
 	return fmt.Sprintf(`respond.Empty(%s, %s, %s)`, logFields, resVar, statusCode)
 }
 
-func (g *VestigoGenerator) ResponseHelperFunctions() *generator.CodeFile {
+func writeResponse(w *writer.Writer, logFieldsName string, response *spec.Response, responseVar string) {
+	if response.Body.Is(spec.ResponseBodyEmpty) {
+		w.Line(respondEmpty(logFieldsName, `res`, spec.HttpStatusCode(response.Name)))
+	}
+	if response.Body.Is(spec.ResponseBodyString) {
+		w.Line(respondText(logFieldsName, `res`, spec.HttpStatusCode(response.Name), `*`+responseVar))
+	}
+	if response.Body.Is(spec.ResponseBodyJson) {
+		w.Line(respondJson(logFieldsName, `res`, spec.HttpStatusCode(response.Name), responseVar))
+	}
+}
+
+func (g *Generator) Response(w *writer.Writer, operation *spec.NamedOperation) {
+	w.Line(`type %s struct {`, responseTypeName(operation))
+	w.Indent()
+	for _, response := range operation.Responses {
+		w.LineAligned(`%s *%s`, response.Name.PascalCase(), g.Types.ResponseBodyGoType(&response.Body))
+	}
+	w.Unindent()
+	w.Line(`}`)
+}
+
+func (g *Generator) ResponseHelperFunctions() *generator.CodeFile {
 	w := writer.New(g.Modules.Respond, `respond.go`)
 	w.Lines(`
 import (

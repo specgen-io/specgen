@@ -19,7 +19,7 @@ type Writer struct {
 
 func New(module module.Module) *Writer {
 	return &Writer{
-		generator.NewWriter(module.GetPath(), TsConfig()),
+		generator.NewWriter(TsConfig()),
 		module.GetPath(),
 		module,
 		NewImports(module),
@@ -35,6 +35,13 @@ func (w *Writer) IndentedWith(size int) *Writer {
 }
 
 func (w *Writer) ToCodeFile() *generator.CodeFile {
-	code := strings.Join(w.Imports.Lines(), "\n") + w.String()
+	lines := []string{}
+	imports := w.Imports.Lines()
+	if len(imports) > 0 {
+		lines = append(lines, imports...)
+		lines = append(lines, "")
+	}
+	lines = append(lines, w.Code()...)
+	code := strings.Join(lines, "\n")
 	return &generator.CodeFile{w.filename, code}
 }

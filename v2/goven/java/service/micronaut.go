@@ -7,7 +7,6 @@ import (
 	"github.com/specgen-io/specgen/v2/goven/generator"
 
 	"github.com/pinzolo/casee"
-	"github.com/specgen-io/specgen/v2/goven/java/imports"
 	"github.com/specgen-io/specgen/v2/goven/java/models"
 	"github.com/specgen-io/specgen/v2/goven/java/packages"
 	"github.com/specgen-io/specgen/v2/goven/java/types"
@@ -49,15 +48,13 @@ func (g *MicronautGenerator) ServiceImports() []string {
 	}
 }
 
-func (g *MicronautGenerator) ExceptionController(responses *spec.Responses) *generator.CodeFile {
+func (g *MicronautGenerator) ExceptionController(responses *spec.ErrorResponses) *generator.CodeFile {
 	w := writer.New(g.Packages.RootControllers, `ExceptionController`)
-	imports := imports.New()
-	imports.Add(g.ServiceImports()...)
-	imports.Add(`io.micronaut.http.annotation.Error`)
-	imports.Add(g.Packages.Json.PackageStar)
-	imports.Add(g.Packages.ErrorsModels.PackageStar)
-	imports.AddStatic(g.Packages.Errors.Subpackage(ErrorsHelpersClassName).PackageStar)
-	imports.Write(w)
+	w.Imports.Add(g.ServiceImports()...)
+	w.Imports.Add(`io.micronaut.http.annotation.Error`)
+	w.Imports.Star(g.Packages.Json)
+	w.Imports.Star(g.Packages.ErrorsModels)
+	w.Imports.StaticStar(g.Packages.Errors.Subpackage(ErrorsHelpersClassName))
 	w.EmptyLine()
 	w.Line(`@Controller`)
 	w.Line(`public class [[.ClassName]] {`)
@@ -71,7 +68,7 @@ func (g *MicronautGenerator) ExceptionController(responses *spec.Responses) *gen
 	return w.ToCodeFile()
 }
 
-func (g *MicronautGenerator) errorHandler(w generator.Writer, errors spec.Responses) {
+func (g *MicronautGenerator) errorHandler(w *writer.Writer, errors spec.ErrorResponses) {
 	notFoundError := errors.GetByStatusName(spec.HttpStatusNotFound)
 	badRequestError := errors.GetByStatusName(spec.HttpStatusBadRequest)
 	internalServerError := errors.GetByStatusName(spec.HttpStatusInternalServerError)
@@ -79,30 +76,28 @@ func (g *MicronautGenerator) errorHandler(w generator.Writer, errors spec.Respon
 	w.Line(`public HttpResponse<?> error(Throwable exception) {`)
 	w.Line(`  var notFoundError = getNotFoundError(exception);`)
 	w.Line(`  if (notFoundError != null) {`)
-	g.processResponse(w.IndentedWith(2), notFoundError, "notFoundError")
+	g.processResponse(w.IndentedWith(2), &notFoundError.Response, "notFoundError")
 	w.Line(`  }`)
 	w.Line(`  var badRequestError = getBadRequestError(exception);`)
 	w.Line(`  if (badRequestError != null) {`)
-	g.processResponse(w.IndentedWith(2), badRequestError, "badRequestError")
+	g.processResponse(w.IndentedWith(2), &badRequestError.Response, "badRequestError")
 	w.Line(`  }`)
 	w.Line(`  var internalServerError = new InternalServerError(exception.getMessage());`)
-	g.processResponse(w.IndentedWith(1), internalServerError, "internalServerError")
+	g.processResponse(w.IndentedWith(1), &internalServerError.Response, "internalServerError")
 	w.Line(`}`)
 }
 
 func (g *MicronautGenerator) serviceController(api *spec.Api) *generator.CodeFile {
 	w := writer.New(g.Packages.Controllers(api.InHttp.InVersion), controllerName(api))
-	imports := imports.New()
-	imports.Add(g.ServiceImports()...)
-	imports.Add(`io.micronaut.core.annotation.Nullable`)
-	imports.Add(g.Packages.ContentType.PackageStar)
-	imports.Add(g.Packages.Json.PackageStar)
-	imports.Add(g.Packages.ErrorsModels.PackageStar)
-	imports.Add(g.Packages.Models(api.InHttp.InVersion).PackageStar)
-	imports.Add(g.Packages.ServicesApi(api).PackageStar)
-	imports.Add(g.Models.ModelsUsageImports()...)
-	imports.Add(g.Types.Imports()...)
-	imports.Write(w)
+	w.Imports.Add(g.ServiceImports()...)
+	w.Imports.Add(`io.micronaut.core.annotation.Nullable`)
+	w.Imports.Star(g.Packages.ContentType)
+	w.Imports.Star(g.Packages.Json)
+	w.Imports.Star(g.Packages.ErrorsModels)
+	w.Imports.Star(g.Packages.Models(api.InHttp.InVersion))
+	w.Imports.Star(g.Packages.ServicesApi(api))
+	w.Imports.Add(g.Models.ModelsUsageImports()...)
+	w.Imports.Add(g.Types.Imports()...)
 	w.EmptyLine()
 	w.Line(`@Controller`)
 	w.Line(`public class [[.ClassName]] {`)
@@ -121,11 +116,11 @@ func (g *MicronautGenerator) serviceController(api *spec.Api) *generator.CodeFil
 	return w.ToCodeFile()
 }
 
-func (g *MicronautGenerator) controllerMethod(w generator.Writer, operation *spec.NamedOperation) {
-	if operation.BodyIs(spec.BodyString) {
+func (g *MicronautGenerator) controllerMethod(w *writer.Writer, operation *spec.NamedOperation) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`@Consumes(MediaType.TEXT_PLAIN)`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`@Consumes(MediaType.APPLICATION_JSON)`)
 	}
 	methodName := operation.Endpoint.Method
@@ -141,19 +136,19 @@ func (g *MicronautGenerator) controllerMethod(w generator.Writer, operation *spe
 	w.Line(`}`)
 }
 
-func (g *MicronautGenerator) parseBody(w generator.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar string) {
-	if operation.BodyIs(spec.BodyString) {
+func (g *MicronautGenerator) parseBody(w *writer.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar string) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`ContentType.check(request, MediaType.TEXT_PLAIN);`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`ContentType.check(request, MediaType.APPLICATION_JSON);`)
 		w.Line(`%s %s = json.%s;`, g.Types.Java(&operation.Body.Type.Definition), bodyJsonVar, g.Models.JsonRead(bodyStringVar, &operation.Body.Type.Definition))
 	}
 }
 
-func (g *MicronautGenerator) serviceCall(w generator.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar, resultVarName string) {
+func (g *MicronautGenerator) serviceCall(w *writer.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar, resultVarName string) {
 	serviceCall := fmt.Sprintf(`%s.%s(%s)`, serviceVarName(operation.InApi), operation.Name.CamelCase(), strings.Join(addServiceMethodParams(operation, bodyStringVar, bodyJsonVar), ", "))
-	if len(operation.Responses) == 1 && operation.Responses[0].BodyIs(spec.BodyEmpty) {
+	if len(operation.Responses) == 1 && operation.Responses[0].Body.Is(spec.ResponseBodyEmpty) {
 		w.Line(`%s;`, serviceCall)
 	} else {
 		w.Line(`var %s = %s;`, resultVarName, serviceCall)
@@ -163,7 +158,7 @@ func (g *MicronautGenerator) serviceCall(w generator.Writer, operation *spec.Nam
 	}
 }
 
-func (g *MicronautGenerator) processResponses(w generator.Writer, operation *spec.NamedOperation, resultVarName string) {
+func (g *MicronautGenerator) processResponses(w *writer.Writer, operation *spec.NamedOperation, resultVarName string) {
 	if len(operation.Responses) == 1 {
 		g.processResponse(w, &operation.Responses[0].Response, resultVarName)
 	}
@@ -178,17 +173,17 @@ func (g *MicronautGenerator) processResponses(w generator.Writer, operation *spe
 	}
 }
 
-func (g *MicronautGenerator) processResponse(w generator.Writer, response *spec.Response, bodyVar string) {
-	if response.BodyIs(spec.BodyEmpty) {
+func (g *MicronautGenerator) processResponse(w *writer.Writer, response *spec.Response, bodyVar string) {
+	if response.Body.Is(spec.ResponseBodyEmpty) {
 		w.Line(`logger.info("Completed request with status code: HttpStatus.%s");`, response.Name.UpperCase())
 		w.Line(`return HttpResponse.status(HttpStatus.%s);`, response.Name.UpperCase())
 	}
-	if response.BodyIs(spec.BodyString) {
+	if response.Body.Is(spec.ResponseBodyString) {
 		w.Line(`logger.info("Completed request with status code: HttpStatus.%s");`, response.Name.UpperCase())
 		w.Line(`return HttpResponse.status(HttpStatus.%s).body(%s).contentType("text/plain");`, response.Name.UpperCase(), bodyVar)
 	}
-	if response.BodyIs(spec.BodyJson) {
-		w.Line(`var bodyJson = json.%s;`, g.Models.JsonWrite(bodyVar, &response.Type.Definition))
+	if response.Body.Is(spec.ResponseBodyJson) {
+		w.Line(`var bodyJson = json.%s;`, g.Models.JsonWrite(bodyVar, &response.Body.Type.Definition))
 		w.Line(`logger.info("Completed request with status code: HttpStatus.%s");`, response.Name.UpperCase())
 		w.Line(`return HttpResponse.status(HttpStatus.%s).body(bodyJson).contentType("application/json");`, response.Name.UpperCase())
 	}
@@ -338,7 +333,7 @@ public class [[.ClassName]] {
 func micronautMethodParams(operation *spec.NamedOperation, types *types.Types) []string {
 	methodParams := []string{"HttpRequest<?> request"}
 
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		methodParams = append(methodParams, "@Body String bodyStr")
 	}
 

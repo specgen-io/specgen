@@ -2,7 +2,6 @@ package service
 
 import (
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/kotlin/imports"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/writer"
 	"github.com/specgen-io/specgen/v2/goven/spec"
 )
@@ -18,12 +17,10 @@ func (g *Generator) ServicesImplementations(version *spec.Version) []generator.C
 func (g *Generator) serviceImplementation(api *spec.Api) *generator.CodeFile {
 	w := writer.New(g.Packages.ServicesImpl(api.InHttp.InVersion), serviceImplName(api))
 	annotationImport, annotation := g.ServiceImplAnnotation(api)
-	imports := imports.New()
-	imports.Add(annotationImport)
-	imports.Add(g.Packages.Models(api.InHttp.InVersion).PackageStar)
-	imports.Add(g.Packages.ServicesApi(api).PackageStar)
-	imports.Add(g.Types.Imports()...)
-	imports.Write(w)
+	w.Imports.Add(annotationImport)
+	w.Imports.PackageStar(g.Packages.Models(api.InHttp.InVersion))
+	w.Imports.PackageStar(g.Packages.ServicesApi(api))
+	w.Imports.Add(g.Types.Imports()...)
 	w.EmptyLine()
 	w.Line(`@%s`, annotation)
 	w.Line(`class [[.ClassName]] : %s {`, serviceInterfaceName(api))

@@ -8,7 +8,8 @@ import (
 
 type OperationResponse struct {
 	Response
-	Operation *NamedOperation
+	Operation     *NamedOperation
+	ErrorResponse *ErrorResponse
 }
 
 type OperationResponses []OperationResponse
@@ -39,6 +40,46 @@ func (responses OperationResponses) HttpStatusCodes() []string {
 	return codes
 }
 
+func (responses OperationResponses) Success() []*OperationResponse {
+	result := []*OperationResponse{}
+	for index := range responses {
+		if responses[index].IsSuccess() {
+			result = append(result, &responses[index])
+		}
+	}
+	return result
+}
+
+func (responses OperationResponses) Errors() []*OperationResponse {
+	result := []*OperationResponse{}
+	for index := range responses {
+		if responses[index].ErrorResponse != nil {
+			result = append(result, &responses[index])
+		}
+	}
+	return result
+}
+
+func (responses OperationResponses) RequiredErrors() []*OperationResponse {
+	result := []*OperationResponse{}
+	for index := range responses {
+		if responses[index].ErrorResponse != nil && responses[index].ErrorResponse.Required {
+			result = append(result, &responses[index])
+		}
+	}
+	return result
+}
+
+func (responses OperationResponses) NonRequiredErrors() []*OperationResponse {
+	result := []*OperationResponse{}
+	for index := range responses {
+		if responses[index].ErrorResponse != nil && !responses[index].ErrorResponse.Required {
+			result = append(result, &responses[index])
+		}
+	}
+	return result
+}
+
 func (value *OperationResponses) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.MappingNode {
 		return yamlError(node, "response should be YAML mapping")
@@ -60,12 +101,13 @@ func (value *OperationResponses) UnmarshalYAML(node *yaml.Node) error {
 		if _, ok := httpStatusCode[name.Source]; !ok {
 			return yamlError(keyNode, fmt.Sprintf("unknown response name %s", name.Source))
 		}
-		definition := Definition{}
-		err = valueNode.DecodeWith(decodeStrict, &definition)
+		body := ResponseBody{}
+		err = valueNode.DecodeWith(decodeStrict, &body)
 		if err != nil {
 			return err
 		}
-		array[index] = OperationResponse{Response{Name: name, Definition: definition}, nil}
+		response := Response{name, body, getDescriptionFromComment(valueNode)}
+		array[index] = OperationResponse{response, nil, nil}
 	}
 	*value = array
 	return nil
@@ -75,7 +117,7 @@ func (value OperationResponses) MarshalYAML() (interface{}, error) {
 	yamlMap := yamlx.Map()
 	for index := 0; index < len(value); index++ {
 		response := value[index]
-		err := yamlMap.AddWithComment(response.Name, response.Definition, response.Description)
+		err := yamlMap.AddWithComment(response.Name, response.Body, response.Description)
 		if err != nil {
 			return nil, err
 		}

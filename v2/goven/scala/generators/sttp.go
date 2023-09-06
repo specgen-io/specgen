@@ -26,10 +26,16 @@ func GenerateSttpClient(specification *spec.Spec, packageName string, generatePa
 	scalaHttpStaticFile := generateStringParams(paramsPackage)
 	sources.AddGenerated(scalaHttpStaticFile)
 
+	errorsPackage := mainPackage.Subpackage("errors")
+	errorsModelsPackage := errorsPackage.Subpackage("models")
+
+	errorModels := generateCirceModels(specification.HttpErrors.ResolvedModels, errorsModelsPackage, jsonPackage)
+	sources.AddGenerated(errorModels)
+
 	for _, version := range specification.Versions {
 		versionClientPackage := mainPackage.Subpackage(version.Name.FlatCase())
 		versionModelsPackage := versionClientPackage.Subpackage("models")
-		clientImplementations := generateClientImplementations(&version, versionClientPackage, versionModelsPackage, jsonPackage, paramsPackage)
+		clientImplementations := generateClientImplementations(&version, versionClientPackage, versionModelsPackage, errorsModelsPackage, jsonPackage, paramsPackage)
 		sources.AddGeneratedAll(clientImplementations)
 		models := generateCirceModels(version.ResolvedModels, versionModelsPackage, jsonPackage)
 		sources.AddGenerated(models)
@@ -38,22 +44,23 @@ func GenerateSttpClient(specification *spec.Spec, packageName string, generatePa
 	return sources
 }
 
-func generateClientImplementations(version *spec.Version, thepackage, modelsPackage, jsonPackage, paramsPackage packages.Package) []generator.CodeFile {
+func generateClientImplementations(version *spec.Version, thepackage, modelsPackage, errorsModelsPackage, jsonPackage, paramsPackage packages.Package) []generator.CodeFile {
 	files := []generator.CodeFile{}
 	for _, api := range version.Http.Apis {
 		apiPackage := thepackage.Subpackage(api.Name.FlatCase())
-		apiClient := generateApiClientApi(&api, apiPackage, modelsPackage, jsonPackage, paramsPackage)
+		apiClient := generateApiClientApi(&api, apiPackage, modelsPackage, errorsModelsPackage, jsonPackage, paramsPackage)
 		files = append(files, *apiClient)
 	}
 	return files
 }
 
-func generateApiClientApi(api *spec.Api, thepackage, modelsPackage, jsonPackage, stringParamsPackage packages.Package) *generator.CodeFile {
+func generateApiClientApi(api *spec.Api, thepackage, modelsPackage, errorsModelsPackage, jsonPackage, stringParamsPackage packages.Package) *generator.CodeFile {
 	w := writer.New(thepackage, `Client`)
 	w.Line(`import scala.concurrent._`)
 	w.Line(`import org.slf4j._`)
 	w.Line(`import com.softwaremill.sttp._`)
 	w.Line(`import %s.ParamsTypesBindings._`, stringParamsPackage.PackageName)
+	w.Line(`import %s`, errorsModelsPackage.PackageStar)
 	if jsonPackage.PackageName != thepackage.PackageName {
 		w.Line(`import %s.Jsoner`, jsonPackage.PackageName)
 	}
@@ -99,7 +106,7 @@ func createUrlParams(urlParams []spec.NamedParam) []string {
 func generateClientOperationSignature(operation *spec.NamedOperation) string {
 	methodParams := []string{}
 	methodParams = append(methodParams, createParams(operation.HeaderParams, false)...)
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		methodParams = append(methodParams, fmt.Sprintf(`body: %s`, ScalaType(&operation.Body.Type.Definition)))
 	}
 	methodParams = append(methodParams, createUrlParams(operation.Endpoint.UrlParams)...)
@@ -110,7 +117,7 @@ func generateClientOperationSignature(operation *spec.NamedOperation) string {
 	return fmt.Sprintf(`def %s(%s): Future[%s]`, operation.Name.CamelCase(), JoinParams(methodParams), responseType(operation))
 }
 
-func generateClientApiTrait(w generator.Writer, api *spec.Api) {
+func generateClientApiTrait(w *writer.Writer, api *spec.Api) {
 	apiTraitName := clientTraitName(api.Name)
 	w.Line(`trait %s {`, apiTraitName)
 	for _, operation := range api.Operations {
@@ -127,7 +134,7 @@ func clientClassName(apiName spec.Name) string {
 	return apiName.PascalCase() + "Client"
 }
 
-func addParamsWriting(w generator.Writer, params []spec.NamedParam, paramsName string) {
+func addParamsWriting(w *writer.Writer, params []spec.NamedParam, paramsName string) {
 	if params != nil && len(params) > 0 {
 		w.Line(`val %s = new StringParamsWriter()`, paramsName)
 		for _, p := range params {
@@ -136,7 +143,7 @@ func addParamsWriting(w generator.Writer, params []spec.NamedParam, paramsName s
 	}
 }
 
-func generateClientOperationImplementation(w generator.Writer, operation *spec.NamedOperation) {
+func generateClientOperationImplementation(w *writer.Writer, operation *spec.NamedOperation) {
 	httpMethod := strings.ToLower(operation.Endpoint.Method)
 	url := operation.FullUrl()
 	for _, param := range operation.Endpoint.UrlParams {
@@ -151,13 +158,13 @@ func generateClientOperationImplementation(w generator.Writer, operation *spec.N
 	}
 
 	addParamsWriting(w, operation.HeaderParams, "headers")
-	if operation.BodyIs(spec.BodyEmpty) {
+	if operation.BodyIs(spec.RequestBodyEmpty) {
 		w.Line(`logger.debug(s"Request to url: ${url}")`)
 	}
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`logger.debug(s"Request to url: ${url}, body: ${body}")`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`val bodyJson = Jsoner.write(body)`)
 		w.Line(`logger.debug(s"Request to url: ${url}, body: ${bodyJson}")`)
 	}
@@ -168,11 +175,11 @@ func generateClientOperationImplementation(w generator.Writer, operation *spec.N
 	if operation.HeaderParams != nil && len(operation.HeaderParams) > 0 {
 		w.Line(`    .headers(headers.params:_*)`)
 	}
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`    .header("Content-Type", "text/plain")`)
 		w.Line(`    .body(body)`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`    .header("Content-Type", "application/json")`)
 		w.Line(`    .body(bodyJson)`)
 	}
@@ -199,34 +206,34 @@ func generateClientOperationImplementation(w generator.Writer, operation *spec.N
 	w.Line(`}`)
 }
 
-func generateClientResponses(w generator.Writer, operation *spec.NamedOperation) {
+func generateClientResponses(w *writer.Writer, operation *spec.NamedOperation) {
 	if len(operation.Responses) == 1 {
 		response := operation.Responses[0]
-		if response.BodyIs(spec.BodyEmpty) {
+		if response.Body.Is(spec.ResponseBodyEmpty) {
 			w.Line(`case %s => ()`, spec.HttpStatusCode(response.Name))
 		}
-		if response.BodyIs(spec.BodyString) {
+		if response.Body.Is(spec.ResponseBodyString) {
 			w.Line(`case %s => body`, spec.HttpStatusCode(response.Name))
 		}
-		if response.BodyIs(spec.BodyJson) {
-			w.Line(`case %s => Jsoner.readThrowing[%s](body)`, spec.HttpStatusCode(response.Name), ScalaType(&response.Type.Definition))
+		if response.Body.Is(spec.ResponseBodyJson) {
+			w.Line(`case %s => Jsoner.readThrowing[%s](body)`, spec.HttpStatusCode(response.Name), ScalaType(&response.Body.Type.Definition))
 		}
 	} else {
 		for _, response := range operation.Responses {
-			if response.BodyIs(spec.BodyEmpty) {
+			if response.Body.Is(spec.ResponseBodyEmpty) {
 				w.Line(`case %s => %s.%s()`, spec.HttpStatusCode(response.Name), responseTypeName(operation), response.Name.PascalCase())
 			}
-			if response.BodyIs(spec.BodyString) {
+			if response.Body.Is(spec.ResponseBodyString) {
 				w.Line(`case %s => %s.%s(body)`, spec.HttpStatusCode(response.Name), responseTypeName(operation), response.Name.PascalCase())
 			}
-			if response.BodyIs(spec.BodyJson) {
-				w.Line(`case %s => %s.%s(Jsoner.readThrowing[%s](body))`, spec.HttpStatusCode(response.Name), responseTypeName(operation), response.Name.PascalCase(), ScalaType(&response.Type.Definition))
+			if response.Body.Is(spec.ResponseBodyJson) {
+				w.Line(`case %s => %s.%s(Jsoner.readThrowing[%s](body))`, spec.HttpStatusCode(response.Name), responseTypeName(operation), response.Name.PascalCase(), ScalaType(&response.Body.Type.Definition))
 			}
 		}
 	}
 }
 
-func generateClientApiClass(w generator.Writer, api *spec.Api) {
+func generateClientApiClass(w *writer.Writer, api *spec.Api) {
 	apiClassName := clientClassName(api.Name)
 	apiTraitName := clientTraitName(api.Name)
 

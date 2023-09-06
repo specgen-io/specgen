@@ -11,24 +11,15 @@ type operation struct {
 	Description  *string            `yaml:"description,omitempty"`
 	HeaderParams HeaderParams       `yaml:"header,omitempty"`
 	QueryParams  QueryParams        `yaml:"query,omitempty"`
-	Body         *Definition        `yaml:"body,omitempty"`
+	Body         *RequestBody       `yaml:"body,omitempty"`
 	Responses    OperationResponses `yaml:"response"`
 	Location     *yaml.Node
 }
 
 type Operation operation
 
-func (operation *Operation) GetResponse(status string) *OperationResponse {
-	for _, response := range operation.Responses {
-		if response.Name.Source == status {
-			return &response
-		}
-	}
-	return nil
-}
-
-func (operation *Operation) BodyIs(kind BodyKind) bool {
-	return kindOf(operation.Body) == kind
+func (operation *Operation) BodyIs(kind RequestBodyKind) bool {
+	return operation.Body.Is(kind)
 }
 
 func (operation *Operation) HasParams() bool {
@@ -43,6 +34,9 @@ func (value *Operation) UnmarshalYAML(node *yaml.Node) error {
 	}
 	internal.Location = node
 	operation := Operation(internal)
+	if operation.Body == nil {
+		operation.Body = &RequestBody{Type: NewType("empty")}
+	}
 	if operation.Body != nil && operation.Body.Description == nil {
 		operation.Body.Description = getDescriptionFromComment(getMappingKey(node, "body"))
 	}
@@ -60,7 +54,9 @@ func (value Operation) MarshalYAML() (interface{}, error) {
 	if len(value.QueryParams) > 0 {
 		yamlMap.Add("query", value.QueryParams)
 	}
-	yamlMap.AddOmitNil("body", value.Body)
+	if !value.BodyIs(RequestBodyEmpty) {
+		yamlMap.Add("body", value.Body)
+	}
 	yamlMap.Add("response", value.Responses)
 	return yamlMap.Node, nil
 }

@@ -3,7 +3,6 @@ package client
 import (
 	"fmt"
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/kotlin/imports"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/models"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/types"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/writer"
@@ -11,7 +10,7 @@ import (
 	"strings"
 )
 
-var Micronaut = "micronaut-low-level"
+var Micronaut = "micronaut"
 
 type MicronautGenerator struct {
 	Types    *types.Types
@@ -35,35 +34,42 @@ func (g *MicronautGenerator) Clients(version *spec.Version) []generator.CodeFile
 
 func (g *MicronautGenerator) client(api *spec.Api) *generator.CodeFile {
 	w := writer.New(g.Packages.Client(api), clientName(api))
-	imports := imports.New()
-	imports.Add(g.Models.ModelsUsageImports()...)
-	imports.Add(g.Types.Imports()...)
-	imports.Add(`io.micronaut.http.HttpHeaders.*`)
-	imports.Add(`io.micronaut.http.HttpRequest.*`)
-	imports.Add(`io.micronaut.http.client.HttpClient`)
-	imports.Add(`java.net.URL`)
-	imports.Add(`org.slf4j.*`)
-	imports.Add(g.Packages.Errors.PackageStar)
-	imports.Add(g.Packages.Json.PackageStar)
-	imports.Add(g.Packages.Utils.PackageStar)
-	imports.Add(g.Packages.Models(api.InHttp.InVersion).PackageStar)
-	imports.Add(g.Packages.Utils.Subpackage(`ClientResponse`).Subpackage(`doRequest`).PackageName)
-	imports.Add(g.Packages.Utils.Subpackage(`ClientResponse`).Subpackage(`getResponseBodyString`).PackageName)
-	imports.Write(w)
-	w.EmptyLine()
-	w.Lines(`
-class [[.ClassName]](private val baseUrl: String) {
-	private val logger: Logger = LoggerFactory.getLogger([[.ClassName]]::class.java)
+	w.Imports.Add(g.Models.ModelsUsageImports()...)
+	w.Imports.Add(g.Types.Imports()...)
+	w.Imports.Add(`io.micronaut.http.HttpHeaders.*`)
+	w.Imports.Add(`io.micronaut.http.HttpRequest.*`)
+	w.Imports.Add(`io.micronaut.http.client.*`)
+	w.Imports.Add(`java.net.URL`)
+	w.Imports.Add(`org.slf4j.*`)
+	w.Imports.PackageStar(g.Packages.Errors)
+	w.Imports.PackageStar(g.Packages.Json)
+	w.Imports.PackageStar(g.Packages.Utils)
+	w.Imports.PackageStar(g.Packages.Models(api.InHttp.InVersion))
+	w.Template(
+		map[string]string{
+			`JsonMapperType`: g.Models.JsonMapperType(),
+			`JsonMapperInit`: g.Models.JsonMapperInit(),
+		}, `
+class [[.ClassName]] {
+    private val logger: Logger = LoggerFactory.getLogger([[.ClassName]]::class.java)
 
-    private var client: HttpClient
-    private val json: Json
+    private var client: BlockingHttpClient
+    private var json: Json
+    private val errorsHandler: ErrorsHandler
 
-	init {
-`)
-	w.IndentedWith(2).Lines(g.Models.CreateJsonHelper(`json`))
-	w.Lines(`
-        client = HttpClient.create(URL(baseUrl))
-	}
+    constructor(client: HttpClient, mapper: [[.JsonMapperType]]) {
+        this.client = client.toBlocking()
+        this.json = Json(mapper)
+        this.errorsHandler = ErrorsHandler(json)
+    }
+
+    constructor(client: HttpClient) : this(client, [[.JsonMapperInit]])
+
+    constructor(baseUrl: String) {
+        this.json = Json([[.JsonMapperInit]])
+        this.client = HttpClient.create(URL(baseUrl)).toBlocking()
+        this.errorsHandler = ErrorsHandler(json)
+    }
 `)
 	for _, operation := range api.Operations {
 		w.EmptyLine()
@@ -73,65 +79,96 @@ class [[.ClassName]](private val baseUrl: String) {
 	return w.ToCodeFile()
 }
 
-func (g *MicronautGenerator) generateClientMethod(w generator.Writer, operation *spec.NamedOperation) {
-	methodName := operation.Endpoint.Method
-	url := operation.FullUrl()
-	w.Line(`fun %s {`, operationSignature(g.Types, operation))
-	requestBody := "body"
-	if operation.BodyIs(spec.BodyJson) {
-		w.Line(`  val bodyJson = json.%s`, g.Models.JsonWrite("body", &operation.Body.Type.Definition))
-		requestBody = "bodyJson"
-	}
-	w.Line(`  val url = UrlBuilder("%s")`, getUrl(operation))
+func (g *MicronautGenerator) createUrl(w *writer.Writer, operation *spec.NamedOperation) {
+	w.Line(`val url = UrlBuilder("%s")`, getUrl(operation))
 	for _, urlPart := range operation.Endpoint.UrlParts {
 		if urlPart.Param != nil {
-			w.Line(`  url.pathParam("%s", %s)`, urlPart.Param.Name.CamelCase(), urlPart.Param.Name.CamelCase())
+			w.Line(`url.pathParam("%s", %s)`, urlPart.Param.Name.CamelCase(), urlPart.Param.Name.CamelCase())
 		}
 	}
 	for _, param := range operation.QueryParams {
-		w.Line(`  url.queryParam("%s", %s)`, param.Name.SnakeCase(), addBuilderParam(&param))
+		w.Line(`url.queryParam("%s", %s)`, param.Name.SnakeCase(), addBuilderParam(&param))
+	}
+}
+
+func (g *MicronautGenerator) createRequest(w *writer.Writer, operation *spec.NamedOperation) {
+	requestBody := "body"
+	if operation.BodyIs(spec.RequestBodyJson) {
+		w.Line(`val bodyJson = json.%s`, g.Models.WriteJson("body", &operation.Body.Type.Definition))
+		requestBody = "bodyJson"
 	}
 	w.EmptyLine()
-	w.Line(`  val request = RequestBuilder(%s)`, requestBuilderParams(methodName, requestBody, operation))
-	if operation.BodyIs(spec.BodyJson) {
-		w.Line(`  request.headerParam(CONTENT_TYPE, "application/json")`)
+	w.Line(`val request = RequestBuilder(%s)`, requestBuilderParams(operation.Endpoint.Method, requestBody, operation))
+	if operation.BodyIs(spec.RequestBodyJson) {
+		w.Line(`request.headerParam(CONTENT_TYPE, "application/json")`)
 	}
-	if operation.BodyIs(spec.BodyString) {
-		w.Line(`  request.headerParam(CONTENT_TYPE, "text/plain")`)
+	if operation.BodyIs(spec.RequestBodyString) {
+		w.Line(`request.headerParam(CONTENT_TYPE, "text/plain")`)
 	}
 	for _, param := range operation.HeaderParams {
-		w.Line(`  request.headerParam("%s", %s)`, param.Name.Source, addBuilderParam(&param))
+		w.Line(`request.headerParam("%s", %s)`, param.Name.Source, addBuilderParam(&param))
 	}
-	w.EmptyLine()
-	w.Line(`  logger.info("Sending request, operationId: %s.%s, method: %s, url: %s")`, operation.InApi.Name.Source, operation.Name.Source, methodName, url)
-	w.Line(`  val response = doRequest(client, request, logger)`)
-	w.EmptyLine()
-	for _, response := range operation.Responses {
-		statusCode := spec.HttpStatusCode(response.Name)
-		if isSuccessfulStatusCode(statusCode) {
-			w.Line(`  if (response.code() == %s) {`, statusCode)
-			w.IndentWith(2)
-			w.Line(`logger.info("Received response with status code {}", response.code())`)
-			if response.BodyIs(spec.BodyEmpty) {
-				w.Line(responseCreate(&response, ""))
-			}
-			if response.BodyIs(spec.BodyString) {
-				responseBodyString := "getResponseBodyString(response, logger)"
-				w.Line(responseCreate(&response, responseBodyString))
-			}
-			if response.BodyIs(spec.BodyJson) {
-				w.Line(`val responseBodyString = getResponseBodyString(response, logger)`)
-				responseBody := fmt.Sprintf(`json.%s`, g.Models.JsonRead("responseBodyString", &response.Type.Definition))
-				w.Line(responseCreate(&response, responseBody))
-			}
-			w.UnindentWith(2)
-			w.Line(`  }`)
-		}
+}
+
+func (g *MicronautGenerator) sendRequest(w *writer.Writer, operation *spec.NamedOperation) {
+	w.Line(`logger.info("Sending request, operationId: %s.%s, method: %s, url: %s")`, operation.InApi.Name.Source, operation.Name.Source, operation.Endpoint.Method, operation.FullUrl())
+	w.Line(`val response = client.sendRequest(request)`)
+	w.Line(`logger.info("Received response with status code ${response.code()}")`)
+}
+
+func (g *MicronautGenerator) processResponse(w *writer.Writer, operation *spec.NamedOperation) {
+	w.Line(`when (response.code()) {`)
+	for _, response := range operation.Responses.Success() {
+		w.Line(`    %s -> %s`, spec.HttpStatusCode(response.Name), g.successResponse(response))
 	}
-	w.Line(`  handleErrors(response, logger, json)`)
-	w.EmptyLine()
-	generateThrowClientException(w.Indented(), `"Unexpected status code received: " + response.code()`, ``)
+	for _, response := range operation.Responses.NonRequiredErrors() {
+		w.Line(`    %s -> %s`, spec.HttpStatusCode(response.Name), g.errorResponse(&response.Response))
+	}
+	w.Line(`    else -> throw ResponseException("Unexpected status code received: ${response.code()}")`)
 	w.Line(`}`)
+}
+
+func (g *MicronautGenerator) generateClientMethod(w *writer.Writer, operation *spec.NamedOperation) {
+	w.Line(`fun %s {`, operationSignature(g.Types, operation))
+	w.Line(`    try {`)
+	w.IndentWith(2)
+	g.createUrl(w, operation)
+	g.createRequest(w, operation)
+	w.EmptyLine()
+	g.sendRequest(w, operation)
+	w.EmptyLine()
+	w.Line(`errorsHandler.handle(response)`)
+	w.EmptyLine()
+	g.processResponse(w, operation)
+	w.UnindentWith(2)
+	w.Lines(`
+    } catch (ex: Throwable) {
+        logger.error(ex.message)
+        throw ClientException(ex)
+    }
+`)
+	w.Line(`}`)
+}
+
+func (g *MicronautGenerator) successResponse(response *spec.OperationResponse) string {
+	if response.Body.Is(spec.ResponseBodyString) {
+		return responseCreate(response, "response.body()!!.toString()")
+	}
+	if response.Body.Is(spec.ResponseBodyJson) {
+		return responseCreate(response, fmt.Sprintf(`json.%s`, g.Models.ReadJson(`response.body()!!.toString()`, &response.Body.Type.Definition)))
+	}
+	return responseCreate(response, "")
+}
+
+func (g *MicronautGenerator) errorResponse(response *spec.Response) string {
+	var responseBody = ""
+	if response.Body.Is(spec.ResponseBodyString) {
+		responseBody = "response.body()!!.string()"
+	}
+	if response.Body.Is(spec.ResponseBodyJson) {
+		responseBody = fmt.Sprintf(`json.%s`, g.Models.ReadJson(`response.body()!!.toString()`, &response.Body.Type.Definition))
+	}
+	return fmt.Sprintf(`throw %s(%s)`, errorExceptionClassName(response), responseBody)
 }
 
 func getUrl(operation *spec.NamedOperation) string {
@@ -148,19 +185,18 @@ func requestBuilderParams(methodName, requestBody string, operation *spec.NamedO
 		urlParam = "url.expand()"
 	}
 	params := fmt.Sprintf(`%s, %s, ::%s`, urlParam, requestBody, methodName)
-	if operation.BodyIs(spec.BodyEmpty) {
+	if operation.BodyIs(spec.RequestBodyEmpty) {
 		params = fmt.Sprintf(`%s, ::%s`, urlParam, methodName)
 	}
 
 	return params
 }
 
-func (g *MicronautGenerator) Utils(responses *spec.Responses) []generator.CodeFile {
+func (g *MicronautGenerator) Utils() []generator.CodeFile {
 	files := []generator.CodeFile{}
 	files = append(files, *g.generateRequestBuilder())
 	files = append(files, *g.generateUrlBuilder())
-	files = append(files, *g.generateClientResponse())
-	files = append(files, *g.generateErrorsHandler(responses))
+	files = append(files, *g.generateRequestor())
 	return files
 }
 
@@ -248,74 +284,53 @@ class UrlBuilder(url: String) {
 	return w.ToCodeFile()
 }
 
-func (g *MicronautGenerator) generateClientResponse() *generator.CodeFile {
-	w := writer.New(g.Packages.Utils, `ClientResponse`)
-	w.Template(
-		map[string]string{
-			`ErrorsPackage`: g.Packages.Errors.PackageName,
-		}, `
+func (g *MicronautGenerator) generateRequestor() *generator.CodeFile {
+	w := writer.New(g.Packages.Utils, `Requestor`)
+	w.Lines(`
 import io.micronaut.http.HttpResponse
-import io.micronaut.http.client.HttpClient
+import io.micronaut.http.client.BlockingHttpClient
 import io.micronaut.http.client.exceptions.HttpClientResponseException
-import org.slf4j.Logger
-import [[.ErrorsPackage]].*
-import java.io.IOException
 
-object ClientResponse {
-	fun doRequest(client: HttpClient, request: RequestBuilder, logger: Logger): HttpResponse<String> {
-		return try {
-			client.toBlocking().exchange(request.build(), String::class.java)
-		} catch (e: HttpClientResponseException) {
-			val errorMessage = "Failed to execute the request " + e.message
-			logger.error(errorMessage)
-			throw ClientException(errorMessage, e)
-		}
-	}
-
-	fun <T> getResponseBodyString(response: HttpResponse<T>, logger: Logger): String {
-		return try {
-			response.body()!!.toString()
-		} catch (e: IOException) {
-			val errorMessage = "Failed to convert response body to string " + e.message
-			logger.error(errorMessage)
-			throw ClientException(errorMessage, e)
-		}
-	}
+fun BlockingHttpClient.sendRequest(request: RequestBuilder): HttpResponse<*> {
+    return try {
+        this.exchange(request.build(), String::class.java)
+    } catch (ex: HttpClientResponseException) {
+        ex.response
+    }
 }
 `)
 	return w.ToCodeFile()
 }
 
-func (g *MicronautGenerator) generateErrorsHandler(errorsResponses *spec.Responses) *generator.CodeFile {
-	w := writer.New(g.Packages.Utils, `ErrorsHandler`)
-	imports := imports.New()
-	imports.Add(g.Models.ModelsUsageImports()...)
-	imports.Add(`io.micronaut.http.*`)
-	imports.Add(`org.slf4j.*`)
-	imports.Add(g.Packages.Errors.PackageStar)
-	imports.Add(g.Packages.ErrorsModels.PackageStar)
-	imports.Add(g.Packages.Json.PackageStar)
-	imports.Add(g.Packages.Utils.Subpackage(`ClientResponse`).Subpackage(`getResponseBodyString`).PackageName)
-	imports.Write(w)
-	w.EmptyLine()
-	w.Line(`fun <T> handleErrors(response: HttpResponse<T>, logger: Logger, json: Json) {`)
-	for _, errorResponse := range *errorsResponses {
-		w.Line(`  if (response.code() == %s) {`, spec.HttpStatusCode(errorResponse.Name))
-		w.Line(`    val responseBodyString = getResponseBodyString(response, logger)`)
-		w.Line(`    val responseBody = json.%s`, g.Models.JsonRead("responseBodyString", &errorResponse.Type.Definition))
-		w.Line(`    throw %sException(responseBody)`, g.Types.Kotlin(&errorResponse.Type.Definition))
-		w.Line(`  }`)
-	}
-	w.Line(`}`)
-
-	return w.ToCodeFile()
-}
-
-func (g *MicronautGenerator) Exceptions(errors *spec.Responses) []generator.CodeFile {
+func (g *MicronautGenerator) Exceptions(errors *spec.ErrorResponses) []generator.CodeFile {
 	files := []generator.CodeFile{}
 	files = append(files, *clientException(g.Packages.Errors))
+	files = append(files, *responseException(g.Packages.Errors))
 	for _, errorResponse := range *errors {
-		files = append(files, *inheritedClientException(g.Packages.Errors, g.Packages.ErrorsModels, g.Types, &errorResponse))
+		files = append(files, *errorResponseException(g.Packages.Errors, g.Packages.ErrorsModels, &errorResponse.Response))
 	}
+	files = append(files, *g.errorsHandler(errors))
 	return files
+}
+
+func (g *MicronautGenerator) errorsHandler(errorsResponses *spec.ErrorResponses) *generator.CodeFile {
+	w := writer.New(g.Packages.Errors, `ErrorsHandler`)
+	w.Imports.Add(`io.micronaut.http.HttpResponse`)
+	w.Imports.PackageStar(g.Packages.Json)
+	w.Lines(`
+class [[.ClassName]](private val json: Json) {
+	fun handle(response: HttpResponse<*>) {
+`)
+	w.IndentWith(2)
+	w.Line(`when (response.code()) {`)
+	for _, errorResponse := range errorsResponses.Required() {
+		w.Line(`    %s -> %s`, spec.HttpStatusCode(errorResponse.Name), g.errorResponse(&errorResponse.Response))
+	}
+	w.Line(`}`)
+	w.UnindentWith(2)
+	w.Lines(`
+	}
+}
+`)
+	return w.ToCodeFile()
 }

@@ -8,20 +8,23 @@ import (
 )
 
 func operationSignature(types *types.Types, operation *spec.NamedOperation) string {
-	if successfulResponsesNumber(operation) == 1 {
-		for _, response := range operation.Responses {
-			return fmt.Sprintf(`%s %s(%s)`, types.Java(&response.Type.Definition), operation.Name.CamelCase(), strings.Join(operationParameters(operation, types), ", "))
-		}
+	return fmt.Sprintf(`%s %s(%s)`,
+		operationReturnType(types, operation),
+		operation.Name.CamelCase(),
+		strings.Join(operationParameters(operation, types), ", "),
+	)
+}
+
+func operationReturnType(types *types.Types, operation *spec.NamedOperation) string {
+	if len(operation.Responses.Success()) == 1 {
+		return types.ResponseBodyJavaType(&operation.Responses.Success()[0].Body)
 	}
-	if successfulResponsesNumber(operation) > 1 {
-		return fmt.Sprintf(`%s %s(%s)`, responseInterfaceName(operation), operation.Name.CamelCase(), strings.Join(operationParameters(operation, types), ", "))
-	}
-	return ""
+	return responseInterfaceName(operation)
 }
 
 func operationParameters(operation *spec.NamedOperation, types *types.Types) []string {
 	params := []string{}
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		params = append(params, fmt.Sprintf("%s body", types.Java(&operation.Body.Type.Definition)))
 	}
 	for _, param := range operation.QueryParams {

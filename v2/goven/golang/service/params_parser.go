@@ -3,7 +3,6 @@ package service
 import (
 	"fmt"
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/golang/module"
 	"github.com/specgen-io/specgen/v2/goven/golang/types"
 	"github.com/specgen-io/specgen/v2/goven/golang/writer"
 	"github.com/specgen-io/specgen/v2/goven/spec"
@@ -62,8 +61,9 @@ func parserMethodNamePlain(typ *spec.TypeDef) string {
 	}
 }
 
-func generateParamsParser(paramsParserModule module.Module) *generator.CodeFile {
-	w := writer.New(paramsParserModule, `parser.go`)
+func (g *Generator) GenerateParamsParser() *generator.CodeFile {
+	w := writer.New(g.Modules.ParamsParser, `parser.go`)
+
 	w.Lines(`
 import (
 	"fmt"
@@ -616,5 +616,49 @@ func (parser *ParamsParser) StringEnumArray(name string, values []string) []stri
 	return convertedValues
 }
 `)
+
+	return w.ToCodeFile()
+}
+
+func (g *Generator) GenerateFormDataParamsParser() *generator.CodeFile {
+	w := writer.New(g.Modules.ParamsParser, `form_data_parser.go`)
+
+	w.Lines(`
+import (
+	"net/http"
+)
+
+func NewFormDataParser(req *http.Request, parseCommaSeparatedArray bool) (*ParamsParser, error) {
+	const defaultMaxMemory = 32 << 20 // 32 MB
+	err := req.ParseMultipartForm(defaultMaxMemory)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ParamsParser{req.PostForm, parseCommaSeparatedArray, []ParsingError{}}, nil
+}
+`)
+
+	return w.ToCodeFile()
+}
+
+func (g *Generator) GenerateFormUrlencodedParamsParser() *generator.CodeFile {
+	w := writer.New(g.Modules.ParamsParser, `form_urlencoded_parser.go`)
+
+	w.Lines(`
+import (
+	"net/http"
+)
+
+func NewFormUrlencodedParser(req *http.Request, parseCommaSeparatedArray bool) (*ParamsParser, error) {
+	err := req.ParseForm()
+	if err != nil {
+		return nil, err
+	}
+
+	return &ParamsParser{req.PostForm, parseCommaSeparatedArray, []ParsingError{}}, nil
+}
+`)
+
 	return w.ToCodeFile()
 }

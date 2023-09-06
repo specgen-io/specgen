@@ -2,7 +2,7 @@ package service
 
 import (
 	"fmt"
-	"github.com/specgen-io/specgen/v2/goven/generator"
+	"github.com/specgen-io/specgen/v2/goven/kotlin/writer"
 	"github.com/specgen-io/specgen/v2/goven/spec"
 	"strings"
 )
@@ -13,10 +13,10 @@ func joinParams(params []string) string {
 
 func addServiceMethodParams(operation *spec.NamedOperation, bodyStringVar, bodyJsonVar string) []string {
 	methodParams := []string{}
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		methodParams = append(methodParams, bodyStringVar)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		methodParams = append(methodParams, bodyJsonVar)
 	}
 	for _, param := range operation.QueryParams {
@@ -31,9 +31,9 @@ func addServiceMethodParams(operation *spec.NamedOperation, bodyStringVar, bodyJ
 	return methodParams
 }
 
-func serviceCall(w generator.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar, resultVarName string) {
+func serviceCall(w *writer.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar, resultVarName string) {
 	serviceCall := fmt.Sprintf(`%s.%s(%s)`, serviceVarName(operation.InApi), operation.Name.CamelCase(), joinParams(addServiceMethodParams(operation, bodyStringVar, bodyJsonVar)))
-	if len(operation.Responses) == 1 && operation.Responses[0].BodyIs(spec.BodyEmpty) {
+	if len(operation.Responses) == 1 && operation.Responses[0].Body.Is(spec.ResponseBodyEmpty) {
 		w.Line(serviceCall)
 	} else {
 		w.Line(`val %s = %s`, resultVarName, serviceCall)

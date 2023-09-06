@@ -18,10 +18,11 @@ func (g *Generator) operationSignature(operation *spec.NamedOperation, apiPackag
 func (g *Generator) operationReturn(operation *spec.NamedOperation, responsePackageName *string) string {
 	if len(operation.Responses) == 1 {
 		response := operation.Responses[0]
-		if response.Type.Definition.IsEmpty() {
+		if response.Body.IsEmpty() {
 			return `error`
+		} else {
+			return fmt.Sprintf(`(*%s, error)`, g.Types.GoType(&response.Body.Type.Definition))
 		}
-		return fmt.Sprintf(`(*%s, error)`, g.Types.GoType(&response.Type.Definition))
 	}
 	responseType := responseTypeName(operation)
 	if responsePackageName != nil {
@@ -32,11 +33,21 @@ func (g *Generator) operationReturn(operation *spec.NamedOperation, responsePack
 
 func operationParams(types *types.Types, operation *spec.NamedOperation) []string {
 	params := []string{}
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		params = append(params, fmt.Sprintf("body %s", types.GoType(&operation.Body.Type.Definition)))
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		params = append(params, fmt.Sprintf("body *%s", types.GoType(&operation.Body.Type.Definition)))
+	}
+	if operation.BodyIs(spec.RequestBodyFormData) {
+		for _, param := range operation.Body.FormData {
+			params = append(params, fmt.Sprintf("%s %s", param.Name.CamelCase(), types.GoType(&param.Type.Definition)))
+		}
+	}
+	if operation.BodyIs(spec.RequestBodyFormUrlEncoded) {
+		for _, param := range operation.Body.FormUrlEncoded {
+			params = append(params, fmt.Sprintf("%s %s", param.Name.CamelCase(), types.GoType(&param.Type.Definition)))
+		}
 	}
 	for _, param := range operation.QueryParams {
 		params = append(params, fmt.Sprintf("%s %s", param.Name.CamelCase(), types.GoType(&param.Type.Definition)))

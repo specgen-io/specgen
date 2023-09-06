@@ -5,7 +5,6 @@ import (
 	"github.com/specgen-io/specgen/v2/goven/generator"
 	"github.com/specgen-io/specgen/v2/goven/spec"
 	"github.com/specgen-io/specgen/v2/goven/typescript/common"
-	"github.com/specgen-io/specgen/v2/goven/typescript/responses"
 	"github.com/specgen-io/specgen/v2/goven/typescript/types"
 	"github.com/specgen-io/specgen/v2/goven/typescript/writer"
 )
@@ -21,25 +20,25 @@ func (g *Generator) ServiceApis(version *spec.Version) []generator.CodeFile {
 func (g *Generator) serviceApi(api *spec.Api) *generator.CodeFile {
 	w := writer.New(g.Modules.ServiceApi(api))
 	w.Imports.Star(g.Modules.Models(api.InHttp.InVersion), types.ModelsPackage)
-	w.Imports.Star(g.Modules.Errors, types.ErrorsPackage)
+	w.Imports.Star(g.Modules.ErrorsModels, types.ErrorsPackage)
 	for _, operation := range api.Operations {
-		if operation.Body != nil || operation.HasParams() {
+		if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) || operation.HasParams() {
 			w.EmptyLine()
 			generateOperationParams(w, &operation)
 		}
 		if len(operation.Responses) > 1 {
 			w.EmptyLine()
-			responses.GenerateOperationResponse(w, &operation)
+			GenerateOperationResponse(w, &operation)
 		}
 	}
 	w.EmptyLine()
 	w.Line("export interface %s {", serviceInterfaceName(api))
 	for _, operation := range api.Operations {
 		params := ""
-		if operation.Body != nil || operation.HasParams() {
+		if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) || operation.HasParams() {
 			params = fmt.Sprintf(`params: %s`, operationParamsTypeName(&operation))
 		}
-		w.Line("  %s(%s): Promise<%s>", operation.Name.CamelCase(), params, responses.ResponseType(&operation, ""))
+		w.Line("  %s(%s): Promise<%s>", operation.Name.CamelCase(), params, ResponseType(&operation, ""))
 	}
 	w.Line("}")
 	return w.ToCodeFile()
@@ -80,7 +79,7 @@ func generateOperationParams(w *writer.Writer, operation *spec.NamedOperation) {
 	generateServiceParams(w, operation.HeaderParams)
 	generateServiceParams(w, operation.Endpoint.UrlParams)
 	generateServiceParams(w, operation.QueryParams)
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		addServiceParam(w, "body", &operation.Body.Type.Definition)
 	}
 	w.Line("}")

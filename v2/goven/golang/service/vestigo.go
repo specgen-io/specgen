@@ -6,10 +6,13 @@ import (
 	"github.com/specgen-io/specgen/v2/goven/generator"
 	"github.com/specgen-io/specgen/v2/goven/golang/models"
 	"github.com/specgen-io/specgen/v2/goven/golang/types"
+	"github.com/specgen-io/specgen/v2/goven/golang/walkers"
 	"github.com/specgen-io/specgen/v2/goven/golang/writer"
 	"github.com/specgen-io/specgen/v2/goven/spec"
 	"strings"
 )
+
+var Vestigo = "vestigo"
 
 type VestigoGenerator struct {
 	Types   *types.Types
@@ -29,41 +32,33 @@ func (g *VestigoGenerator) Routings(version *spec.Version) []generator.CodeFile 
 	return files
 }
 
-func (g *VestigoGenerator) signatureAddRouting(api *spec.Api) string {
-	fullServiceInterfaceName := fmt.Sprintf("%s.%s", api.Name.SnakeCase(), serviceInterfaceName)
-	return fmt.Sprintf(`%s(router *vestigo.Router, %s %s)`, g.addRoutesMethodName(api), serviceInterfaceTypeVar(api), fullServiceInterfaceName)
-}
-
 func (g *VestigoGenerator) routing(api *spec.Api) *generator.CodeFile {
 	w := writer.New(g.Modules.Routing(api.InHttp.InVersion), fmt.Sprintf("%s.go", api.Name.SnakeCase()))
 
-	if types.ApiHasBody(api) {
-		w.Imports.Add("encoding/json")
-	}
 	w.Imports.Add("github.com/husobee/vestigo")
 	w.Imports.AddAliased("github.com/sirupsen/logrus", "log")
 	w.Imports.Add("net/http")
 	w.Imports.Add("fmt")
-	if types.BodyHasType(api, spec.TypeString) {
+	if walkers.ApiHasBodyOfKind(api, spec.RequestBodyString) {
 		w.Imports.Add("io/ioutil")
 	}
-	if hasNonEmptyBody(api) {
+	if walkers.ApiHasBodyOfKind(api, spec.RequestBodyJson) {
+		w.Imports.Add("encoding/json")
+	}
+	if walkers.ApiHasBodyOfKind(api, spec.RequestBodyJson) || walkers.ApiHasBodyOfKind(api, spec.RequestBodyString) {
 		w.Imports.Module(g.Modules.ContentType)
 	}
 	w.Imports.Module(g.Modules.ServicesApi(api))
 	w.Imports.Module(g.Modules.HttpErrors)
 	w.Imports.Module(g.Modules.HttpErrorsModels)
-	if isRouterUsingModels(api) {
+	if walkers.ApiIsUsingModels(api) {
 		w.Imports.Module(g.Modules.Models(api.InHttp.InVersion))
 	}
 	if operationHasParams(api) {
 		w.Imports.Module(g.Modules.ParamsParser)
 	}
 	w.Imports.Module(g.Modules.Respond)
-
-	w.EmptyLine()
-
-	w.Line(`func %s(router *vestigo.Router, %s %s) {`, g.addRoutesMethodName(api), serviceInterfaceTypeVar(api), g.Modules.ServicesApi(api).Get(serviceInterfaceName))
+	w.Line(`func %s(router *vestigo.Router, %s %s) {`, addRoutesMethodName(api), serviceInterfaceTypeVar(api), g.Modules.ServicesApi(api).Get(serviceInterfaceName))
 	w.Indent()
 	for _, operation := range api.Operations {
 		url := g.getEndpointUrl(&operation)
@@ -80,27 +75,6 @@ func (g *VestigoGenerator) routing(api *spec.Api) *generator.CodeFile {
 	w.Line(`}`)
 
 	return w.ToCodeFile()
-}
-
-func operationHasParams(api *spec.Api) bool {
-	for _, operation := range api.Operations {
-		for _, param := range operation.QueryParams {
-			if &param != nil {
-				return true
-			}
-		}
-		for _, param := range operation.HeaderParams {
-			if &param != nil {
-				return true
-			}
-		}
-		for _, param := range operation.Endpoint.UrlParams {
-			if &param != nil {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func (g *VestigoGenerator) getEndpointUrl(operation *spec.NamedOperation) string {
@@ -121,10 +95,6 @@ func (g *VestigoGenerator) addSetCors(w *writer.Writer, operation *spec.NamedOpe
 	}
 	w.Line(`  AllowHeaders: []string{%s},`, strings.Join(params, ", "))
 	w.Line(`})`)
-}
-
-func logFieldsName(operation *spec.NamedOperation) string {
-	return fmt.Sprintf("log%s", operation.Name.PascalCase())
 }
 
 func (g *VestigoGenerator) parserParameterCall(isUrlParam bool, param *spec.NamedParam, paramsParserName string) string {
@@ -164,7 +134,7 @@ func (g *VestigoGenerator) urlParamsParsing(w *writer.Writer, operation *spec.Na
 			w.Line(`%s := %s`, param.Name.CamelCase(), g.parserParameterCall(true, &param, "urlParams"))
 		}
 		w.Line(`if len(urlParams.Errors) > 0 {`)
-		g.respondNotFound(w.Indented(), operation, fmt.Sprintf(`"Failed to parse url parameters"`))
+		respondNotFound(w.Indented(), operation, g.Types, fmt.Sprintf(`"Failed to parse url parameters"`))
 		w.Line(`}`)
 	}
 }
@@ -175,42 +145,27 @@ func (g *VestigoGenerator) parametersParsing(w *writer.Writer, operation *spec.N
 		for _, param := range namedParams {
 			w.Line(`%s := %s`, param.Name.CamelCase(), g.parserParameterCall(false, &param, paramsParserName))
 		}
-
 		w.Line(`if len(%s.Errors) > 0 {`, paramsParserName)
-		g.respondBadRequest(w.Indented(), operation, paramsParserName, fmt.Sprintf(`"Failed to parse %s"`, paramsParserName), fmt.Sprintf(`httperrors.Convert(%s.Errors)`, paramsParserName))
+		respondBadRequest(w.Indented(), operation, g.Types, paramsParserName, fmt.Sprintf(`"Failed to parse %s"`, paramsParserName), fmt.Sprintf(`httperrors.Convert(%s.Errors)`, paramsParserName))
 		w.Line(`}`)
 	}
 }
 
 func (g *VestigoGenerator) serviceCallAndResponseCheck(w *writer.Writer, operation *spec.NamedOperation, responseVar string) {
-	singleEmptyResponse := len(operation.Responses) == 1 && operation.Responses[0].Type.Definition.IsEmpty()
-	serviceCall := g.serviceCall(serviceInterfaceTypeVar(operation.InApi), operation)
+	singleEmptyResponse := len(operation.Responses) == 1 && operation.Responses[0].Body.IsEmpty()
+	serviceCall := serviceCall(serviceInterfaceTypeVar(operation.InApi), operation)
 	if singleEmptyResponse {
 		w.Line(`err = %s`, serviceCall)
 	} else {
 		w.Line(`%s, err := %s`, responseVar, serviceCall)
 	}
-
 	w.Line(`if err != nil {`)
-	g.respondInternalServerError(w.Indented(), operation, genFmtSprintf("Error returned from service implementation: %s", `err.Error()`))
+	respondInternalServerError(w.Indented(), operation, g.Types, genFmtSprintf("Error returned from service implementation: %s", `err.Error()`))
 	w.Line(`}`)
-
 	if !singleEmptyResponse {
 		w.Line(`if response == nil {`)
-		g.respondInternalServerError(w.Indented(), operation, `"Service implementation returned nil"`)
+		respondInternalServerError(w.Indented(), operation, g.Types, `"Service implementation returned nil"`)
 		w.Line(`}`)
-	}
-}
-
-func (g *VestigoGenerator) WriteResponse(w *writer.Writer, logFieldsName string, response *spec.Response, responseVar string) {
-	if response.BodyIs(spec.BodyEmpty) {
-		w.Line(respondEmpty(logFieldsName, `res`, spec.HttpStatusCode(response.Name)))
-	}
-	if response.BodyIs(spec.BodyString) {
-		w.Line(respondText(logFieldsName, `res`, spec.HttpStatusCode(response.Name), `*`+responseVar))
-	}
-	if response.BodyIs(spec.BodyJson) {
-		w.Line(respondJson(logFieldsName, `res`, spec.HttpStatusCode(response.Name), responseVar))
 	}
 }
 
@@ -227,32 +182,32 @@ func (g *VestigoGenerator) operation(w *writer.Writer, operation *spec.NamedOper
 
 func (g *VestigoGenerator) response(w *writer.Writer, operation *spec.NamedOperation, responseVar string) {
 	if len(operation.Responses) == 1 {
-		g.WriteResponse(w, logFieldsName(operation), &operation.Responses[0].Response, responseVar)
+		writeResponse(w, logFieldsName(operation), &operation.Responses[0].Response, responseVar)
 	} else {
 		for _, response := range operation.Responses {
 			responseVar := fmt.Sprintf("%s.%s", responseVar, response.Name.PascalCase())
 			w.Line(`if %s != nil {`, responseVar)
-			g.WriteResponse(w.Indented(), logFieldsName(operation), &response.Response, responseVar)
+			writeResponse(w.Indented(), logFieldsName(operation), &response.Response, responseVar)
 			w.Line(`  return`)
 			w.Line(`}`)
 		}
-		g.respondInternalServerError(w, operation, `"Result from service implementation does not have anything in it"`)
+		respondInternalServerError(w, operation, g.Types, `"Result from service implementation does not have anything in it"`)
 	}
 }
 
 func (g *VestigoGenerator) bodyParsing(w *writer.Writer, operation *spec.NamedOperation) {
-	if operation.BodyIs(spec.BodyString) {
-		w.Line(`if !%s {`, callCheckContentType(logFieldsName(operation), `"text/plain"`, "req", "res"))
+	if operation.BodyIs(spec.RequestBodyString) {
+		w.Line(`if !%s {`, callCheckContentType(logFieldsName(operation), fmt.Sprintf(`"%s"`, ContentType(operation)), "req", "res"))
 		w.Line(`  return`)
 		w.Line(`}`)
 		w.Line(`bodyData, err := ioutil.ReadAll(req.Body)`)
 		w.Line(`if err != nil {`)
-		g.respondBadRequest(w.Indented(), operation, "body", genFmtSprintf(`Reading request body failed: %s`, `err.Error()`), "nil")
+		respondBadRequest(w.Indented(), operation, g.Types, "body", genFmtSprintf(`Reading request body failed: %s`, `err.Error()`), "nil")
 		w.Line(`}`)
 		w.Line(`body := string(bodyData)`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
-		w.Line(`if !%s {`, callCheckContentType(logFieldsName(operation), `"application/json"`, "req", "res"))
+	if operation.BodyIs(spec.RequestBodyJson) {
+		w.Line(`if !%s {`, callCheckContentType(logFieldsName(operation), fmt.Sprintf(`"%s"`, ContentType(operation)), "req", "res"))
 		w.Line(`  return`)
 		w.Line(`}`)
 		w.Line(`var body %s`, g.Types.GoType(&operation.Body.Type.Definition))
@@ -263,46 +218,27 @@ func (g *VestigoGenerator) bodyParsing(w *writer.Writer, operation *spec.NamedOp
 		w.Line(`    message := fmt.Sprintf("Failed to parse JSON, field: PERCENT_s", unmarshalError.Field)`)
 		w.Line(`    errors = []errmodels.ValidationError{{Path: unmarshalError.Field, Code: "parsing_failed", Message: &message}}`)
 		w.Line(`  }`)
-		g.respondBadRequest(w.Indented(), operation, "body", `"Failed to parse body"`, "errors")
+		respondBadRequest(w.Indented(), operation, g.Types, "body", `"Failed to parse body"`, "errors")
 		w.Line(`}`)
 	}
-}
-
-func (g *VestigoGenerator) serviceCall(serviceVar string, operation *spec.NamedOperation) string {
-	params := []string{}
-	if operation.BodyIs(spec.BodyString) {
-		params = append(params, "body")
+	if operation.BodyIs(spec.RequestBodyFormData) || operation.BodyIs(spec.RequestBodyFormUrlEncoded) {
+		w.Line(`if !%s {`, callCheckContentType(logFieldsName(operation), fmt.Sprintf(`"%s"`, ContentType(operation)), "req", "res"))
+		w.Line(`  return`)
+		w.Line(`}`)
+		w.Line(`formBody, err := paramsparser.New%sParser(req, true)`, casee.ToPascalCase(formBodyTypeName(operation)))
+		w.Line(`if err != nil {`)
+		respondBadRequest(w.Indented(), operation, g.Types, "body", `"Failed to parse body"`, fmt.Sprintf(`[]errmodels.ValidationError{{Path: "", Code: "%s_parse_failed"}}`, formBodyTypeName(operation)))
+		w.Line(`}`)
+		for _, param := range operation.Body.FormData {
+			w.Line(`%s := %s`, param.Name.CamelCase(), g.parserParameterCall(false, &param, "formBody"))
+		}
+		for _, param := range operation.Body.FormUrlEncoded {
+			w.Line(`%s := %s`, param.Name.CamelCase(), g.parserParameterCall(false, &param, "formBody"))
+		}
+		w.Line(`if len(formBody.Errors) > 0 {`)
+		respondBadRequest(w.Indented(), operation, g.Types, "body", fmt.Sprintf(`"Failed to parse body"`), fmt.Sprintf(`httperrors.Convert(formBody.Errors)`))
+		w.Line(`}`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
-		params = append(params, "&body")
-	}
-	for _, param := range operation.QueryParams {
-		params = append(params, param.Name.CamelCase())
-	}
-	for _, param := range operation.HeaderParams {
-		params = append(params, param.Name.CamelCase())
-	}
-	for _, param := range operation.Endpoint.UrlParams {
-		params = append(params, param.Name.CamelCase())
-	}
-
-	return fmt.Sprintf(`%s.%s(%s)`, serviceVar, operation.Name.PascalCase(), strings.Join(params, ", "))
-}
-
-func (g *VestigoGenerator) addRoutesMethodName(api *spec.Api) string {
-	return fmt.Sprintf(`Add%sRoutes`, api.Name.PascalCase())
-}
-
-func genFmtSprintf(format string, args ...string) string {
-	if len(args) > 0 {
-		return fmt.Sprintf(`fmt.Sprintf("%s", %s)`, format, strings.Join(args, ", "))
-	} else {
-		return format
-	}
-}
-
-func serviceInterfaceTypeVar(api *spec.Api) string {
-	return fmt.Sprintf(`%sService`, api.Name.Source)
 }
 
 func (g *VestigoGenerator) RootRouting(specification *spec.Spec) *generator.CodeFile {
@@ -315,20 +251,20 @@ func (g *VestigoGenerator) RootRouting(specification *spec.Spec) *generator.Code
 			w.Imports.ModuleAliased(g.Modules.ServicesApi(&api).Aliased(apiPackageAlias(&api)))
 		}
 	}
-
-	w.EmptyLine()
-	routesParams := []string{}
+	w.Line(`type Services struct {`)
 	for _, version := range specification.Versions {
 		for _, api := range version.Http.Apis {
 			apiModule := g.Modules.ServicesApi(&api).Aliased(apiPackageAlias(&api))
-			routesParams = append(routesParams, fmt.Sprintf(`%s %s`, serviceApiNameVersioned(&api), apiModule.Get(serviceInterfaceName)))
+			w.LineAligned(`  %s %s`, serviceApiPublicNameVersioned(&api), apiModule.Get(serviceInterfaceName))
 		}
 	}
-	w.Line(`func AddRoutes(router *vestigo.Router, %s) {`, strings.Join(routesParams, ", "))
+	w.Line(`}`)
+	w.EmptyLine()
+	w.Line(`func AddRoutes(router *vestigo.Router, services Services) {`)
 	for _, version := range specification.Versions {
 		routingModule := g.Modules.Routing(&version).Aliased(routingPackageAlias(&version))
 		for _, api := range version.Http.Apis {
-			w.Line(`  %s(router, %s)`, routingModule.Get(g.addRoutesMethodName(&api)), serviceApiNameVersioned(&api))
+			w.Line(`  %s(router, services.%s)`, routingModule.Get(addRoutesMethodName(&api)), serviceApiPublicNameVersioned(&api))
 		}
 	}
 	w.Line(`}`)
@@ -336,117 +272,6 @@ func (g *VestigoGenerator) RootRouting(specification *spec.Spec) *generator.Code
 	return w.ToCodeFile()
 }
 
-func routingPackageAlias(version *spec.Version) string {
-	if version.Name.Source != "" {
-		return fmt.Sprintf(`%s`, version.Name.FlatCase())
-	} else {
-		return fmt.Sprintf(`root`)
-	}
-}
-
-func apiPackageAlias(api *spec.Api) string {
-	version := api.InHttp.InVersion.Name
-	if version.Source != "" {
-		return api.Name.CamelCase() + version.PascalCase()
-	}
-	return api.Name.CamelCase()
-}
-
-func serviceApiNameVersioned(api *spec.Api) string {
-	return fmt.Sprintf(`%sService%s`, api.Name.Source, api.InHttp.InVersion.Name.PascalCase())
-}
-
-func (g *VestigoGenerator) CheckContentType() *generator.CodeFile {
-	w := writer.New(g.Modules.ContentType, `check.go`)
-	w.Template(
-		map[string]string{
-			`ErrorsPackage`:       g.Modules.HttpErrors.Package,
-			`ErrorsModelsPackage`: g.Modules.HttpErrorsModels.Package,
-		}, `
-import (
-	"fmt"
-	log "github.com/sirupsen/logrus"
-	"net/http"
-	"strings"
-	"[[.ErrorsPackage]]"
-	"[[.ErrorsModelsPackage]]"
-)
-
-func Check(logFields log.Fields, expectedContentType string, req *http.Request, res http.ResponseWriter) bool {
-	contentType := req.Header.Get("Content-Type")
-	if !strings.Contains(contentType, expectedContentType) {
-		message := fmt.Sprintf("Expected Content-Type header: '%s' was not provided, found: '%s'", expectedContentType, contentType)
-		httperrors.RespondBadRequest(logFields, res, &errmodels.BadRequestError{Location: "header", Message: "Failed to parse header", Errors: []errmodels.ValidationError{{Path: "Content-Type", Code: "missing", Message: &message}}})
-		return false
-	}
-	return true
-}
-`)
-	return w.ToCodeFile()
-}
-
-func (g *VestigoGenerator) HttpErrors(responses *spec.Responses) []generator.CodeFile {
-	files := []generator.CodeFile{}
-
-	files = append(files, *g.errorsModelsConverter())
-	files = append(files, *g.ErrorResponses(responses))
-
-	return files
-}
-
-func (g *VestigoGenerator) errorsModelsConverter() *generator.CodeFile {
-	w := writer.New(g.Modules.HttpErrors, `converter.go`)
-	w.Template(
-		map[string]string{
-			`ErrorsModelsPackage`: g.Modules.HttpErrorsModels.Package,
-			`ParamsParserModule`:  g.Modules.ParamsParser.Package,
-		}, `
-import (
-	"[[.ErrorsModelsPackage]]"
-	"[[.ParamsParserModule]]"
-)
-
-func Convert(parsingErrors []paramsparser.ParsingError) []errmodels.ValidationError {
-	var validationErrors []errmodels.ValidationError
-
-	for _, parsingError := range parsingErrors {
-		validationError := errmodels.ValidationError(parsingError)
-		validationErrors = append(validationErrors, validationError)
-	}
-
-	return validationErrors
-}
-`)
-	return w.ToCodeFile()
-}
-
-func hasNonEmptyBody(api *spec.Api) bool {
-	hasNonEmptyBody := false
-	walk := spec.NewWalker().
-		OnOperation(func(operation *spec.NamedOperation) {
-			if operation.BodyIs(spec.BodyJson) || operation.BodyIs(spec.BodyString) {
-				hasNonEmptyBody = true
-			}
-		})
-	walk.Api(api)
-	return hasNonEmptyBody
-}
-
-func isRouterUsingModels(api *spec.Api) bool {
-	usingModels := false
-	walk := spec.NewWalker().
-		OnOperation(func(operation *spec.NamedOperation) {
-			if operation.Body != nil {
-				if types.IsModel(&operation.Body.Type.Definition) {
-					usingModels = true
-				}
-			}
-		}).
-		OnParam(func(param *spec.NamedParam) {
-			if param.Type.Definition.Info.Model != nil {
-				usingModels = true
-			}
-		})
-	walk.Api(api)
-	return usingModels
+func (g *VestigoGenerator) GenerateUrlParamsCtor() *generator.CodeFile {
+	return nil
 }

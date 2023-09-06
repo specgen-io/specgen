@@ -3,8 +3,6 @@ package writer
 import (
 	"fmt"
 	"github.com/specgen-io/specgen/v2/goven/golang/module"
-	"github.com/specgen-io/specgen/v2/goven/golang/types"
-	"github.com/specgen-io/specgen/v2/goven/spec"
 	"sort"
 )
 
@@ -52,45 +50,13 @@ func (self *imports) Lines() []string {
 		for _, theImport := range imports {
 			alias := self.imports[theImport]
 			if alias != "" {
-				lines = append(lines, fmt.Sprintf(`  %s "%s"`, alias, theImport))
+				lines = append(lines, fmt.Sprintf(`	%s "%s"`, alias, theImport))
 			} else {
-				lines = append(lines, fmt.Sprintf(`  "%s"`, theImport))
+				lines = append(lines, fmt.Sprintf(`	"%s"`, theImport))
 			}
 		}
 		lines = append(lines, `)`)
-		lines = append(lines, ``)
 		return lines
 	}
 	return []string{}
-}
-
-func (self *imports) AddApiTypes(api *spec.Api) *imports {
-	if types.ApiHasType(api, spec.TypeDate) {
-		self.Add("cloud.google.com/go/civil")
-	}
-	if types.ApiHasType(api, spec.TypeJson) {
-		self.Add("encoding/json")
-	}
-	if types.ApiHasType(api, spec.TypeUuid) {
-		self.Add("github.com/google/uuid")
-	}
-	if types.ApiHasType(api, spec.TypeDecimal) {
-		self.Add("github.com/shopspring/decimal")
-	}
-	return self
-}
-
-func (self *imports) AddModelsTypes(models []*spec.NamedModel) *imports {
-	self.Add("errors")
-	self.Add("encoding/json")
-	if types.VersionModelsHasType(models, spec.TypeDate) {
-		self.Add("cloud.google.com/go/civil")
-	}
-	if types.VersionModelsHasType(models, spec.TypeUuid) {
-		self.Add("github.com/google/uuid")
-	}
-	if types.VersionModelsHasType(models, spec.TypeDecimal) {
-		self.Add("github.com/shopspring/decimal")
-	}
-	return self
 }

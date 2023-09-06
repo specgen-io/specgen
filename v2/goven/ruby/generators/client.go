@@ -59,7 +59,7 @@ func generateClientApisClasses(specification *spec.Spec, generatePath string) *g
 	return w.ToCodeFile()
 }
 
-func generateVersionClientModule(w generator.Writer, version *spec.Version, moduleName string) {
+func generateVersionClientModule(w *writer.Writer, version *spec.Version, moduleName string) {
 	w.Line("module %s", versionedModule(moduleName, version.Name))
 	for index, api := range version.Http.Apis {
 		if index != 0 {
@@ -80,11 +80,11 @@ func operationResult(operation *spec.NamedOperation, response *spec.Response) st
 		}
 	}
 
-	if response.BodyIs(spec.BodyString) {
+	if response.Body.Is(spec.ResponseBodyString) {
 		body := "response.body"
 		return fmt.Sprintf("OpenStruct.new(:%s => %s%s)", response.Name.Source, body, flags)
-	} else if response.BodyIs(spec.BodyJson) {
-		body := fmt.Sprintf("Jsoner.from_json(%s, response.body)", RubyType(&response.Type.Definition))
+	} else if response.Body.Is(spec.ResponseBodyJson) {
+		body := fmt.Sprintf("Jsoner.from_json(%s, response.body)", RubyType(&response.Body.Type.Definition))
 		return fmt.Sprintf("OpenStruct.new(:%s => %s%s)", response.Name.Source, body, flags)
 	} else {
 		body := "nil"
@@ -92,10 +92,10 @@ func operationResult(operation *spec.NamedOperation, response *spec.Response) st
 	}
 }
 
-func generateClientOperation(w generator.Writer, moduleName string, operation *spec.NamedOperation) {
+func generateClientOperation(w *writer.Writer, moduleName string, operation *spec.NamedOperation) {
 	args := []string{}
 	args = append(args, addParams(operation.HeaderParams)...)
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		args = append(args, "body:")
 	}
 	args = append(args, addParams(operation.Endpoint.UrlParams)...)
@@ -131,11 +131,11 @@ func generateClientOperation(w generator.Writer, moduleName string, operation *s
 		w.Line("header.params.each { |name, value| request.add_field(name, value) }")
 	}
 
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`request.add_field('Content-Type', 'text/plain')`)
 		w.Line("request.body = T.check_var('body', String, body)")
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`request.add_field('Content-Type', 'application/json')`)
 		bodyRubyType := RubyType(&operation.Body.Type.Definition)
 		w.Line(fmt.Sprintf("body_json = Jsoner.to_json(%s, T.check_var('body', %s, body))", bodyRubyType, bodyRubyType))
@@ -156,7 +156,7 @@ func generateClientOperation(w generator.Writer, moduleName string, operation *s
 	w.Line("end")
 }
 
-func generateClientApiClass(w generator.Writer, moduleName string, api *spec.Api) {
+func generateClientApiClass(w *writer.Writer, moduleName string, api *spec.Api) {
 	w.Line("class %s < %s::BaseClient", clientClassName(api.Name), moduleName)
 	for index, operation := range api.Operations {
 		if index != 0 {
@@ -179,7 +179,7 @@ func addParams(params []spec.NamedParam) []string {
 	return args
 }
 
-func addParamsWriting(w generator.Writer, moduleName string, params []spec.NamedParam, paramsName string) {
+func addParamsWriting(w *writer.Writer, moduleName string, params []spec.NamedParam, paramsName string) {
 	if params != nil && len(params) > 0 {
 		w.Line("%s = %s::StringParams.new", paramsName, moduleName)
 		for _, p := range params {

@@ -2,52 +2,45 @@ package models
 
 import (
 	"fmt"
-	"strings"
-
 	"github.com/specgen-io/specgen/v2/goven/generator"
 	"github.com/specgen-io/specgen/v2/goven/golang/module"
 	"github.com/specgen-io/specgen/v2/goven/golang/types"
+	"github.com/specgen-io/specgen/v2/goven/golang/walkers"
 	"github.com/specgen-io/specgen/v2/goven/golang/writer"
 	"github.com/specgen-io/specgen/v2/goven/spec"
+	"strings"
 )
 
-func NewEncodingJsonGenerator(types *types.Types, modules *Modules) *EncodingJsonGenerator {
-	return &EncodingJsonGenerator{types, modules}
+func NewEncodingJsonGenerator(types *types.Types, modules *Modules, mode bool) *EncodingJsonGenerator {
+	return &EncodingJsonGenerator{types, modules, mode}
 }
 
 type EncodingJsonGenerator struct {
-	Types   *types.Types
-	Modules *Modules
+	Types      *types.Types
+	Modules    *Modules
+	strictMode bool
 }
 
-func (g *EncodingJsonGenerator) Models(version *spec.Version) *generator.CodeFile {
+func (g *EncodingJsonGenerator) Models(version *spec.Version) []generator.CodeFile {
 	return g.models(version.ResolvedModels, g.Modules.Models(version))
 }
 
-func (g *EncodingJsonGenerator) ErrorModels(httperrors *spec.HttpErrors) *generator.CodeFile {
+func (g *EncodingJsonGenerator) ErrorModels(httperrors *spec.HttpErrors) []generator.CodeFile {
 	return g.models(httperrors.ResolvedModels, g.Modules.HttpErrorsModels)
 }
 
-func (g *EncodingJsonGenerator) models(models []*spec.NamedModel, modelsModule module.Module) *generator.CodeFile {
-	w := writer.New(modelsModule, "models.go")
-
-	w.Imports.AddModelsTypes(models)
-	if types.ModelsHasEnum(models) {
-		w.Imports.Module(g.Modules.Enums)
-	}
-
+func (g *EncodingJsonGenerator) models(models []*spec.NamedModel, modelsModule module.Module) []generator.CodeFile {
+	files := []generator.CodeFile{}
 	for _, model := range models {
-		w.EmptyLine()
 		if model.IsObject() {
-			g.objectModel(w, model)
+			files = append(files, *g.objectModel(modelsModule, model))
 		} else if model.IsOneOf() {
-			g.oneOfModel(w, model)
+			files = append(files, *g.oneOfModel(modelsModule, model))
 		} else if model.IsEnum() {
-			g.enumModel(w, model)
+			files = append(files, *g.enumModel(modelsModule, model))
 		}
 	}
-
-	return w.ToCodeFile()
+	return files
 }
 
 func (g *EncodingJsonGenerator) requiredFieldsList(object *spec.Object) string {
@@ -64,7 +57,26 @@ func (g *EncodingJsonGenerator) requiredFields(model *spec.NamedModel) string {
 	return fmt.Sprintf(`%sRequiredFields`, model.Name.CamelCase())
 }
 
-func (g *EncodingJsonGenerator) objectModel(w *writer.Writer, model *spec.NamedModel) {
+func (g *EncodingJsonGenerator) objectModel(modelsModule module.Module, model *spec.NamedModel) *generator.CodeFile {
+	w := writer.New(modelsModule, model.Name.SnakeCase()+`.go`)
+	if g.strictMode {
+		w.Imports.Add("errors")
+		if !walkers.ModelHasType(model, spec.TypeJson) {
+			w.Imports.Add("encoding/json")
+		}
+	}
+	if walkers.ModelHasType(model, spec.TypeJson) {
+		w.Imports.Add("encoding/json")
+	}
+	if walkers.ModelHasType(model, spec.TypeDate) {
+		w.Imports.Add("cloud.google.com/go/civil")
+	}
+	if walkers.ModelHasType(model, spec.TypeUuid) {
+		w.Imports.Add("github.com/google/uuid")
+	}
+	if walkers.ModelHasType(model, spec.TypeDecimal) {
+		w.Imports.Add("github.com/shopspring/decimal")
+	}
 	w.Line("type %s struct {", model.Name.PascalCase())
 	w.Indent()
 	for _, field := range model.Object.Fields {
@@ -79,56 +91,63 @@ func (g *EncodingJsonGenerator) objectModel(w *writer.Writer, model *spec.NamedM
 	}
 	w.Unindent()
 	w.Line("}")
-	w.EmptyLine()
-	w.Line(`type %s %s`, model.Name.CamelCase(), model.Name.PascalCase())
-	w.EmptyLine()
-	w.Line(`var %s = []string{%s}`, g.requiredFields(model), g.requiredFieldsList(model.Object))
-	w.EmptyLine()
-	w.Line(`func (obj %s) MarshalJSON() ([]byte, error) {`, model.Name.PascalCase())
-	w.Line(`	data, err := json.Marshal(%s(obj))`, model.Name.CamelCase())
-	w.Line(`	if err != nil {`)
-	w.Line(`		return nil, err`)
-	w.Line(`	}`)
-	w.Line(`	var rawMap map[string]json.RawMessage`)
-	w.Line(`	err = json.Unmarshal(data, &rawMap)`)
-	w.Line(`	for _, name := range %s {`, g.requiredFields(model))
-	w.Line(`		value, found := rawMap[name]`)
-	w.Line(`		if !found {`)
-	w.Line(`			return nil, errors.New("required field missing: " + name)`)
-	w.Line(`		}`)
-	w.Line(`		if string(value) == "null" {`)
-	w.Line(`			return nil, errors.New("required field doesn't have value: " + name)`)
-	w.Line(`		}`)
-	w.Line(`	}`)
-	w.Line(`	return data, nil`)
-	w.Line(`}`)
-	w.EmptyLine()
-	w.Line(`func (obj *%s) UnmarshalJSON(data []byte) error {`, model.Name.PascalCase())
-	w.Line(`	jsonObj := %s(*obj)`, model.Name.CamelCase())
-	w.Line(`	err := json.Unmarshal(data, &jsonObj)`)
-	w.Line(`	if err != nil {`)
-	w.Line(`		return err`)
-	w.Line(`	}`)
-	w.Line(`	var rawMap map[string]json.RawMessage`)
-	w.Line(`	err = json.Unmarshal(data, &rawMap)`)
-	w.Line(`	if err != nil {`)
-	w.Line(`		return errors.New("failed to check fields in json: " + err.Error())`)
-	w.Line(`	}`)
-	w.Line(`	for _, name := range %s {`, g.requiredFields(model))
-	w.Line(`		value, found := rawMap[name]`)
-	w.Line(`		if !found {`)
-	w.Line(`			return errors.New("required field missing: " + name)`)
-	w.Line(`		}`)
-	w.Line(`		if string(value) == "null" {`)
-	w.Line(`			return errors.New("required field doesn't have value: " + name)`)
-	w.Line(`		}`)
-	w.Line(`	}`)
-	w.Line(`	*obj = %s(jsonObj)`, model.Name.PascalCase())
-	w.Line(`	return nil`)
-	w.Line(`}`)
+	if g.strictMode {
+		w.EmptyLine()
+		w.Line(`type %s %s`, model.Name.CamelCase(), model.Name.PascalCase())
+		w.EmptyLine()
+		w.Line(`var %s = []string{%s}`, g.requiredFields(model), g.requiredFieldsList(model.Object))
+		w.EmptyLine()
+		w.Line(`func (obj %s) MarshalJSON() ([]byte, error) {`, model.Name.PascalCase())
+		w.Line(`	data, err := json.Marshal(%s(obj))`, model.Name.CamelCase())
+		w.Line(`	if err != nil {`)
+		w.Line(`		return nil, err`)
+		w.Line(`	}`)
+		w.Line(`	var rawMap map[string]json.RawMessage`)
+		w.Line(`	err = json.Unmarshal(data, &rawMap)`)
+		w.Line(`	for _, name := range %s {`, g.requiredFields(model))
+		w.Line(`		value, found := rawMap[name]`)
+		w.Line(`		if !found {`)
+		w.Line(`			return nil, errors.New("required field missing: " + name)`)
+		w.Line(`		}`)
+		w.Line(`		if string(value) == "null" {`)
+		w.Line(`			return nil, errors.New("required field doesn't have value: " + name)`)
+		w.Line(`		}`)
+		w.Line(`	}`)
+		w.Line(`	return data, nil`)
+		w.Line(`}`)
+		w.EmptyLine()
+		w.Line(`func (obj *%s) UnmarshalJSON(data []byte) error {`, model.Name.PascalCase())
+		w.Line(`	jsonObj := %s(*obj)`, model.Name.CamelCase())
+		w.Line(`	err := json.Unmarshal(data, &jsonObj)`)
+		w.Line(`	if err != nil {`)
+		w.Line(`		return err`)
+		w.Line(`	}`)
+		w.Line(`	var rawMap map[string]json.RawMessage`)
+		w.Line(`	err = json.Unmarshal(data, &rawMap)`)
+		w.Line(`	if err != nil {`)
+		w.Line(`		return errors.New("failed to check fields in json: " + err.Error())`)
+		w.Line(`	}`)
+		w.Line(`	for _, name := range %s {`, g.requiredFields(model))
+		w.Line(`		value, found := rawMap[name]`)
+		w.Line(`		if !found {`)
+		w.Line(`			return errors.New("required field missing: " + name)`)
+		w.Line(`		}`)
+		w.Line(`		if string(value) == "null" {`)
+		w.Line(`			return errors.New("required field doesn't have value: " + name)`)
+		w.Line(`		}`)
+		w.Line(`	}`)
+		w.Line(`	*obj = %s(jsonObj)`, model.Name.PascalCase())
+		w.Line(`	return nil`)
+		w.Line(`}`)
+	}
+	return w.ToCodeFile()
 }
 
-func (g *EncodingJsonGenerator) enumModel(w *writer.Writer, model *spec.NamedModel) {
+func (g *EncodingJsonGenerator) enumModel(modelsModule module.Module, model *spec.NamedModel) *generator.CodeFile {
+	w := writer.New(modelsModule, model.Name.SnakeCase()+`.go`)
+	if g.strictMode {
+		w.Imports.Module(g.Modules.Enums)
+	}
 	w.Line("type %s %s", model.Name.PascalCase(), "string")
 	w.EmptyLine()
 	w.Line("const (")
@@ -143,20 +162,23 @@ func (g *EncodingJsonGenerator) enumModel(w *writer.Writer, model *spec.NamedMod
 	choiceValuesParams := []string{}
 	for _, enumItem := range model.Enum.Items {
 		enumConstName := model.Name.PascalCase() + enumItem.Name.PascalCase()
-		choiceValuesStringsParams = append(choiceValuesStringsParams, fmt.Sprintf("string(%s)", enumConstName))
+		choiceValuesStringsParams = append(choiceValuesStringsParams, enumConstName)
 		choiceValuesParams = append(choiceValuesParams, fmt.Sprintf("%s", enumConstName))
 	}
 	w.Line("var %s = []string{%s}", g.EnumValuesStrings(model), strings.Join(choiceValuesStringsParams, ", "))
 	w.Line("var %s = []%s{%s}", g.enumValues(model), model.Name.PascalCase(), strings.Join(choiceValuesParams, ", "))
-	w.EmptyLine()
-	w.Line("func (self *%s) UnmarshalJSON(b []byte) error {", model.Name.PascalCase())
-	w.Line("  str, err := enums.ReadStringValue(b, %sValuesStrings)", model.Name.PascalCase())
-	w.Line("  if err != nil {")
-	w.Line("    return err")
-	w.Line("  }")
-	w.Line("  *self = %s(str)", model.Name.PascalCase())
-	w.Line("  return nil")
-	w.Line("}")
+	if g.strictMode {
+		w.EmptyLine()
+		w.Line("func (self *%s) UnmarshalJSON(b []byte) error {", model.Name.PascalCase())
+		w.Line("  str, err := %s.ReadStringValue(b, %sValuesStrings)", g.Modules.Enums.Name, model.Name.PascalCase())
+		w.Line("  if err != nil {")
+		w.Line("    return err")
+		w.Line("  }")
+		w.Line("  *self = %s(str)", model.Name.PascalCase())
+		w.Line("  return nil")
+		w.Line("}")
+	}
+	return w.ToCodeFile()
 }
 
 func (g *EncodingJsonGenerator) EnumValuesStrings(model *spec.NamedModel) string {
@@ -167,11 +189,11 @@ func (g *EncodingJsonGenerator) enumValues(model *spec.NamedModel) string {
 	return fmt.Sprintf("%sValues", model.Name.PascalCase())
 }
 
-func (g *EncodingJsonGenerator) oneOfModel(w *writer.Writer, model *spec.NamedModel) {
+func (g *EncodingJsonGenerator) oneOfModel(modelsModule module.Module, model *spec.NamedModel) *generator.CodeFile {
 	if model.OneOf.Discriminator != nil {
-		g.oneOfModelDiscriminator(w, model)
+		return g.oneOfModelDiscriminator(modelsModule, model)
 	} else {
-		g.oneOfModelWrapper(w, model)
+		return g.oneOfModelWrapper(modelsModule, model)
 	}
 }
 
@@ -183,8 +205,26 @@ func (g *EncodingJsonGenerator) getCaseChecks(oneof *spec.OneOf) string {
 	return strings.Join(caseChecks, " && ")
 }
 
-func (g *EncodingJsonGenerator) oneOfModelWrapper(w *writer.Writer, model *spec.NamedModel) {
-	caseChecks := g.getCaseChecks(model.OneOf)
+func (g *EncodingJsonGenerator) oneOfModelWrapper(modelsModule module.Module, model *spec.NamedModel) *generator.CodeFile {
+	w := writer.New(modelsModule, model.Name.SnakeCase()+`.go`)
+	if g.strictMode {
+		w.Imports.Add("errors")
+		if !walkers.ModelHasType(model, spec.TypeJson) {
+			w.Imports.Add("encoding/json")
+		}
+	}
+	if walkers.ModelHasType(model, spec.TypeJson) {
+		w.Imports.Add("encoding/json")
+	}
+	if walkers.ModelHasType(model, spec.TypeDate) {
+		w.Imports.Add("cloud.google.com/go/civil")
+	}
+	if walkers.ModelHasType(model, spec.TypeUuid) {
+		w.Imports.Add("github.com/google/uuid")
+	}
+	if walkers.ModelHasType(model, spec.TypeDecimal) {
+		w.Imports.Add("github.com/shopspring/decimal")
+	}
 	w.Line("type %s struct {", model.Name.PascalCase())
 	w.Indent()
 	for _, item := range model.OneOf.Items {
@@ -195,31 +235,46 @@ func (g *EncodingJsonGenerator) oneOfModelWrapper(w *writer.Writer, model *spec.
 	}
 	w.Unindent()
 	w.Line("}")
-	w.EmptyLine()
-	w.Line(`type %s %s`, model.Name.CamelCase(), model.Name.PascalCase())
-	w.EmptyLine()
-	w.Line(`func (u %s) MarshalJSON() ([]byte, error) {`, model.Name.PascalCase())
-	w.Line(`	if %s {`, caseChecks)
-	w.Line(`		return nil, errors.New("union case is not set")`)
-	w.Line(`	}`)
-	w.Line(`	return json.Marshal(%s(u))`, model.Name.CamelCase())
-	w.Line(`}`)
-	w.EmptyLine()
-	w.Line(`func (u *%s) UnmarshalJSON(data []byte) error {`, model.Name.PascalCase())
-	w.Line(`	jsonObj := %s(*u)`, model.Name.CamelCase())
-	w.Line(`	err := json.Unmarshal(data, &jsonObj)`)
-	w.Line(`	if err != nil {`)
-	w.Line(`		return err`)
-	w.Line(`	}`)
-	w.Line(`	*u = %s(jsonObj)`, model.Name.PascalCase())
-	w.Line(`	if %s {`, caseChecks)
-	w.Line(`		return errors.New("union case is not set")`)
-	w.Line(`	}`)
-	w.Line(`	return nil`)
-	w.Line(`}`)
+	if g.strictMode {
+		w.EmptyLine()
+		w.Line(`type %s %s`, model.Name.CamelCase(), model.Name.PascalCase())
+		w.EmptyLine()
+		w.Line(`func (u %s) MarshalJSON() ([]byte, error) {`, model.Name.PascalCase())
+		w.Line(`	if %s {`, g.getCaseChecks(model.OneOf))
+		w.Line(`		return nil, errors.New("union case is not set")`)
+		w.Line(`	}`)
+		w.Line(`	return json.Marshal(%s(u))`, model.Name.CamelCase())
+		w.Line(`}`)
+		w.EmptyLine()
+		w.Line(`func (u *%s) UnmarshalJSON(data []byte) error {`, model.Name.PascalCase())
+		w.Line(`	jsonObj := %s(*u)`, model.Name.CamelCase())
+		w.Line(`	err := json.Unmarshal(data, &jsonObj)`)
+		w.Line(`	if err != nil {`)
+		w.Line(`		return err`)
+		w.Line(`	}`)
+		w.Line(`	*u = %s(jsonObj)`, model.Name.PascalCase())
+		w.Line(`	if %s {`, g.getCaseChecks(model.OneOf))
+		w.Line(`		return errors.New("union case is not set")`)
+		w.Line(`	}`)
+		w.Line(`	return nil`)
+		w.Line(`}`)
+	}
+	return w.ToCodeFile()
 }
 
-func (g *EncodingJsonGenerator) oneOfModelDiscriminator(w *writer.Writer, model *spec.NamedModel) {
+func (g *EncodingJsonGenerator) oneOfModelDiscriminator(modelsModule module.Module, model *spec.NamedModel) *generator.CodeFile {
+	w := writer.New(modelsModule, model.Name.SnakeCase()+`.go`)
+	w.Imports.Add("errors")
+	w.Imports.Add("encoding/json")
+	if walkers.ModelHasType(model, spec.TypeDate) {
+		w.Imports.Add("cloud.google.com/go/civil")
+	}
+	if walkers.ModelHasType(model, spec.TypeUuid) {
+		w.Imports.Add("github.com/google/uuid")
+	}
+	if walkers.ModelHasType(model, spec.TypeDecimal) {
+		w.Imports.Add("github.com/shopspring/decimal")
+	}
 	w.Line("type %s struct {", model.Name.PascalCase())
 	w.Indent()
 	for _, item := range model.OneOf.Items {
@@ -271,4 +326,5 @@ func (g *EncodingJsonGenerator) oneOfModelDiscriminator(w *writer.Writer, model 
 	w.Line(`  }`)
 	w.Line(`  return nil`)
 	w.Line(`}`)
+	return w.ToCodeFile()
 }

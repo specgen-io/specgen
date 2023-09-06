@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/pinzolo/casee"
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/kotlin/imports"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/models"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/types"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/writer"
@@ -46,67 +45,61 @@ func (g *SpringGenerator) ServiceImports() []string {
 	}
 }
 
-func (g *SpringGenerator) ExceptionController(responses *spec.Responses) *generator.CodeFile {
+func (g *SpringGenerator) ExceptionController(responses *spec.ErrorResponses) *generator.CodeFile {
 	w := writer.New(g.Packages.RootControllers, `ExceptionController`)
-	imports := imports.New()
-	imports.Add(g.ServiceImports()...)
-	imports.Add(`javax.servlet.http.HttpServletRequest`)
-	imports.Add(`org.apache.tomcat.util.http.fileupload.FileUploadBase.CONTENT_TYPE`)
-	imports.Add(g.Packages.Json.PackageStar)
-	imports.Add(g.Packages.ErrorsModels.PackageStar)
-	imports.Add(g.Packages.Errors.PackageStar)
-	imports.Write(w)
+	w.Imports.Add(g.ServiceImports()...)
+	w.Imports.Add(`javax.servlet.http.HttpServletRequest`)
+	w.Imports.Add(`org.apache.tomcat.util.http.fileupload.FileUploadBase.CONTENT_TYPE`)
+	w.Imports.PackageStar(g.Packages.Json)
+	w.Imports.PackageStar(g.Packages.ErrorsModels)
+	w.Imports.PackageStar(g.Packages.Errors)
 	w.EmptyLine()
 	w.Line(`@ControllerAdvice`)
 	w.Line(`class [[.ClassName]](@Autowired private val json: Json) {`)
-	w.Line(`  private val logger = LogManager.getLogger([[.ClassName]]::class.java)`)
+	w.Line(`    private val logger = LogManager.getLogger([[.ClassName]]::class.java)`)
 	w.EmptyLine()
 	g.errorHandler(w.Indented(), *responses)
 	w.Line(`}`)
 	return w.ToCodeFile()
 }
 
-func (g *SpringGenerator) errorHandler(w generator.Writer, errors spec.Responses) {
+func (g *SpringGenerator) errorHandler(w *writer.Writer, errors spec.ErrorResponses) {
 	notFoundError := errors.GetByStatusName(spec.HttpStatusNotFound)
 	badRequestError := errors.GetByStatusName(spec.HttpStatusBadRequest)
 	internalServerError := errors.GetByStatusName(spec.HttpStatusInternalServerError)
 	w.Line(`@ExceptionHandler(Throwable::class)`)
 	w.Line(`fun error(request: HttpServletRequest, exception: Throwable): ResponseEntity<String> {`)
-	w.Line(`  val notFoundError = getNotFoundError(exception)`)
-	w.Line(`  if (notFoundError != null) {`)
-	g.processResponse(w.IndentedWith(2), notFoundError, "notFoundError")
-	w.Line(`  }`)
-	w.Line(`  val badRequestError = getBadRequestError(exception)`)
-	w.Line(`  if (badRequestError != null) {`)
-	g.processResponse(w.IndentedWith(2), badRequestError, "badRequestError")
-	w.Line(`  }`)
-	w.Line(`  val internalServerError = InternalServerError(exception.message ?: "Unknown error")`)
-	g.processResponse(w.IndentedWith(1), internalServerError, "internalServerError")
+	w.Line(`    val notFoundError = getNotFoundError(exception)`)
+	w.Line(`    if (notFoundError != null) {`)
+	g.processResponse(w.IndentedWith(2), &notFoundError.Response, "notFoundError")
+	w.Line(`    }`)
+	w.Line(`    val badRequestError = getBadRequestError(exception)`)
+	w.Line(`    if (badRequestError != null) {`)
+	g.processResponse(w.IndentedWith(2), &badRequestError.Response, "badRequestError")
+	w.Line(`    }`)
+	w.Line(`    val internalServerError = InternalServerError(exception.message ?: "Unknown error")`)
+	g.processResponse(w.IndentedWith(1), &internalServerError.Response, "internalServerError")
 	w.Line(`}`)
 }
 
 func (g *SpringGenerator) serviceController(api *spec.Api) *generator.CodeFile {
 	w := writer.New(g.Packages.Controllers(api.InHttp.InVersion), controllerName(api))
-	imports := imports.New()
-	imports.Add(g.ServiceImports()...)
-	imports.Add(`javax.servlet.http.HttpServletRequest`)
-	imports.Add(`org.apache.tomcat.util.http.fileupload.FileUploadBase.CONTENT_TYPE`)
-	imports.Add(g.Packages.ContentType.PackageStar)
-	imports.Add(g.Packages.Json.PackageStar)
-	imports.Add(g.Packages.Models(api.InHttp.InVersion).PackageStar)
-	imports.Add(g.Packages.ErrorsModels.PackageStar)
-	imports.Add(g.Packages.ServicesApi(api).PackageStar)
-	imports.Add(g.Models.ModelsUsageImports()...)
-	imports.Add(g.Types.Imports()...)
-	imports.Write(w)
-	w.EmptyLine()
+	w.Imports.Add(g.ServiceImports()...)
+	w.Imports.Add(`javax.servlet.http.HttpServletRequest`)
+	w.Imports.Add(`org.apache.tomcat.util.http.fileupload.FileUploadBase.CONTENT_TYPE`)
+	w.Imports.PackageStar(g.Packages.ContentType)
+	w.Imports.PackageStar(g.Packages.Json)
+	w.Imports.PackageStar(g.Packages.Models(api.InHttp.InVersion))
+	w.Imports.PackageStar(g.Packages.ErrorsModels)
+	w.Imports.PackageStar(g.Packages.ServicesApi(api))
+	w.Imports.Add(g.Models.ModelsUsageImports()...)
+	w.Imports.Add(g.Types.Imports()...)
 	w.Line(`@RestController("%s")`, versionControllerName(controllerName(api), api.InHttp.InVersion))
 	w.Line(`class [[.ClassName]](`)
-	w.Line(`  @Autowired private val %s: %s,`, serviceVarName(api), serviceInterfaceName(api))
-	w.Line(`  @Autowired private val json: Json`)
+	w.Line(`    @Autowired private val %s: %s,`, serviceVarName(api), serviceInterfaceName(api))
+	w.Line(`    @Autowired private val json: Json`)
 	w.Line(`) {`)
-	w.Line(`  private val logger = LogManager.getLogger([[.ClassName]]::class.java)`)
-
+	w.Line(`    private val logger = LogManager.getLogger([[.ClassName]]::class.java)`)
 	for _, operation := range api.Operations {
 		w.EmptyLine()
 		g.controllerMethod(w.Indented(), &operation)
@@ -115,32 +108,36 @@ func (g *SpringGenerator) serviceController(api *spec.Api) *generator.CodeFile {
 	return w.ToCodeFile()
 }
 
-func (g *SpringGenerator) controllerMethod(w generator.Writer, operation *spec.NamedOperation) {
+func (g *SpringGenerator) controllerMethod(w *writer.Writer, operation *spec.NamedOperation) {
 	methodName := operation.Endpoint.Method
 	url := operation.FullUrl()
 	w.Line(`@%sMapping("%s")`, casee.ToPascalCase(methodName), url)
 	w.Line(`fun %s(%s): ResponseEntity<String> {`, controllerMethodName(operation), strings.Join(springMethodParams(operation, g.Types), ", "))
 	w.Indent()
 	w.Line(`logger.info("Received request, operationId: %s.%s, method: %s, url: %s")`, operation.InApi.Name.Source, operation.Name.Source, methodName, url)
-	g.parseBody(w, operation, "bodyStr", "requestBody")
-	serviceCall(w, operation, "bodyStr", "requestBody", "result")
+	bodyStringVar := "bodyStr"
+	if operation.BodyIs(spec.RequestBodyJson) {
+		bodyStringVar += ".reader()"
+	}
+	g.parseBody(w, operation, bodyStringVar, "requestBody")
+	serviceCall(w, operation, bodyStringVar, "requestBody", "result")
 	g.processResponses(w, operation, "result")
 	w.Unindent()
 	w.Line(`}`)
 }
 
-func (g *SpringGenerator) parseBody(w generator.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar string) {
-	if operation.BodyIs(spec.BodyString) {
+func (g *SpringGenerator) parseBody(w *writer.Writer, operation *spec.NamedOperation, bodyStringVar, bodyJsonVar string) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`checkContentType(request, MediaType.TEXT_PLAIN)`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`checkContentType(request, MediaType.APPLICATION_JSON)`)
 		typ := g.Types.Kotlin(&operation.Body.Type.Definition)
-		w.Line(`val %s: %s = json.%s`, bodyJsonVar, typ, g.Models.JsonRead(bodyStringVar, &operation.Body.Type.Definition))
+		w.Line(`val %s: %s = json.%s`, bodyJsonVar, typ, g.Models.ReadJson(bodyStringVar, &operation.Body.Type.Definition))
 	}
 }
 
-func (g *SpringGenerator) processResponses(w generator.Writer, operation *spec.NamedOperation, resultVarName string) {
+func (g *SpringGenerator) processResponses(w *writer.Writer, operation *spec.NamedOperation, resultVarName string) {
 	if len(operation.Responses) == 1 {
 		g.processResponse(w, &operation.Responses[0].Response, resultVarName)
 	}
@@ -154,19 +151,19 @@ func (g *SpringGenerator) processResponses(w generator.Writer, operation *spec.N
 	}
 }
 
-func (g *SpringGenerator) processResponse(w generator.Writer, response *spec.Response, bodyVar string) {
-	if response.BodyIs(spec.BodyEmpty) {
+func (g *SpringGenerator) processResponse(w *writer.Writer, response *spec.Response, bodyVar string) {
+	if response.Body.Is(spec.ResponseBodyEmpty) {
 		w.Line(`logger.info("Completed request with status code: {}", HttpStatus.%s)`, response.Name.UpperCase())
 		w.Line(`return ResponseEntity(HttpStatus.%s)`, response.Name.UpperCase())
 	}
-	if response.BodyIs(spec.BodyString) {
+	if response.Body.Is(spec.ResponseBodyString) {
 		w.Line(`val headers = HttpHeaders()`)
 		w.Line(`headers.add(CONTENT_TYPE, "text/plain")`)
 		w.Line(`logger.info("Completed request with status code: {}", HttpStatus.%s)`, response.Name.UpperCase())
 		w.Line(`return ResponseEntity(%s, headers, HttpStatus.%s)`, bodyVar, response.Name.UpperCase())
 	}
-	if response.BodyIs(spec.BodyJson) {
-		w.Line(`val bodyJson = json.%s`, g.Models.JsonWrite(bodyVar, &response.Type.Definition))
+	if response.Body.Is(spec.ResponseBodyJson) {
+		w.Line(`val bodyJson = json.%s`, g.Models.WriteJson(bodyVar, &response.Body.Type.Definition))
 		w.Line(`val headers = HttpHeaders()`)
 		w.Line(`headers.add(CONTENT_TYPE, "application/json")`)
 		w.Line(`logger.info("Completed request with status code: {}", HttpStatus.%s)`, response.Name.UpperCase())
@@ -275,7 +272,7 @@ fun getBadRequestError(exception: Throwable): BadRequestError? {
 func springMethodParams(operation *spec.NamedOperation, types *types.Types) []string {
 	methodParams := []string{"request: HttpServletRequest"}
 
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		methodParams = append(methodParams, "@RequestBody bodyStr: String")
 	}
 	methodParams = append(methodParams, generateSpringMethodParam(operation.QueryParams, "RequestParam", types)...)

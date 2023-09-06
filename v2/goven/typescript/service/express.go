@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/specgen-io/specgen/v2/goven/generator"
 	"github.com/specgen-io/specgen/v2/goven/spec"
+	"github.com/specgen-io/specgen/v2/goven/typescript/types"
 	"github.com/specgen-io/specgen/v2/goven/typescript/validations"
 	"github.com/specgen-io/specgen/v2/goven/typescript/writer"
 	"strings"
@@ -62,12 +63,12 @@ func (g *expressGenerator) VersionRouting(version *spec.Version) *generator.Code
 	routingModule := g.Modules.Routing(version)
 
 	w := writer.New(routingModule)
-	w.Line(`import {Router, Request, Response} from 'express'`)
-	w.Line(`import {zipHeaders} from '%s'`, g.Modules.Params.GetImport(routingModule))
-	w.Line(`import * as t from '%s'`, g.Modules.Validation.GetImport(routingModule))
-	w.Line(`import * as models from '%s'`, g.Modules.Models(version).GetImport(routingModule))
-	w.Line(`import * as errors from '%s'`, g.Modules.Errors.GetImport(routingModule))
-	w.Line(`import * as responses from '%s'`, g.Modules.Responses.GetImport(routingModule))
+	w.Imports.LibNames(`express`, `Router`, `Request`, `Response`)
+	w.Imports.Names(g.Modules.Params, `zipHeaders`)
+	w.Imports.Star(g.Modules.Validation, `t`)
+	w.Imports.Star(g.Modules.Models(version), types.ModelsPackage)
+	w.Imports.Star(g.Modules.ErrorsModels, types.ErrorsPackage)
+	w.Imports.Star(g.Modules.Responses, `responses`)
 
 	for _, api := range version.Http.Apis {
 		w.Line("import {%s} from './%s'", serviceInterfaceName(&api), g.Modules.ServiceApi(&api).GetImport(routingModule))
@@ -107,16 +108,16 @@ func getExpressUrl(endpoint spec.Endpoint) string {
 }
 
 func (g *expressGenerator) response(w *writer.Writer, response *spec.Response, dataParam string) {
-	if response.BodyIs(spec.BodyEmpty) {
+	if response.Body.Is(spec.ResponseBodyEmpty) {
 		w.Line("response.status(%s).send()", spec.HttpStatusCode(response.Name))
 		w.Line("return")
 	}
-	if response.BodyIs(spec.BodyString) {
+	if response.Body.Is(spec.ResponseBodyString) {
 		w.Line("response.status(%s).type('text').send(%s)", spec.HttpStatusCode(response.Name), dataParam)
 		w.Line("return")
 	}
-	if response.BodyIs(spec.BodyJson) {
-		w.Line("response.status(%s).type('json').send(JSON.stringify(t.encode(%s, %s)))", spec.HttpStatusCode(response.Name), g.Validation.RuntimeType(&response.Type.Definition), dataParam)
+	if response.Body.Is(spec.ResponseBodyJson) {
+		w.Line("response.status(%s).type('json').send(JSON.stringify(t.encode(%s, %s)))", spec.HttpStatusCode(response.Name), g.Validation.RuntimeType(&response.Body.Type.Definition), dataParam)
 		w.Line("return")
 	}
 }
@@ -135,12 +136,12 @@ func (g *expressGenerator) responses(w *writer.Writer, responses spec.OperationR
 }
 
 func (g *expressGenerator) checkContentType(w *writer.Writer, operation *spec.NamedOperation) {
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`if (!responses.assertContentType(request, response, "text/plain")) {`)
 		w.Line(`  return`)
 		w.Line(`}`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line(`if (!responses.assertContentType(request, response, "application/json")) {`)
 		w.Line(`  return`)
 		w.Line(`}`)
@@ -198,10 +199,10 @@ func (g *expressGenerator) queryParsing(w *writer.Writer, operation *spec.NamedO
 }
 
 func (g *expressGenerator) bodyParsing(w *writer.Writer, operation *spec.NamedOperation) {
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		w.Line(`const body: string = request.body`)
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		w.Line("const bodyDecode = t.decodeR(%s, request.body)", g.Validation.RuntimeType(&operation.Body.Type.Definition))
 		w.Line("if (bodyDecode.error) {")
 		g.respondBadRequest(w.Indented(), "BODY", "bodyDecode.error", "Failed to parse body")
@@ -227,10 +228,9 @@ func (g *expressGenerator) respondInternalServerError(w *writer.Writer) {
 
 func (g *expressGenerator) Responses() *generator.CodeFile {
 	w := writer.New(g.Modules.Responses)
-
-	w.Line(`import {Request, Response} from 'express'`)
-	w.Line(`import * as t from '%s'`, g.Modules.Validation.GetImport(g.Modules.Responses))
-	w.Line(`import * as errors from '%s'`, g.Modules.Errors.GetImport(g.Modules.Responses))
+	w.Imports.LibNames(`express`, `Request`, `Response`)
+	w.Imports.Star(g.Modules.Validation, `t`)
+	w.Imports.Star(g.Modules.ErrorsModels, types.ErrorsPackage)
 
 	w.EmptyLine()
 	code := `

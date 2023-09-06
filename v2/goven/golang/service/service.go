@@ -2,24 +2,34 @@ package service
 
 import (
 	"github.com/specgen-io/specgen/v2/goven/generator"
+	"github.com/specgen-io/specgen/v2/goven/golang/empty"
 	"github.com/specgen-io/specgen/v2/goven/openapi"
 	"github.com/specgen-io/specgen/v2/goven/spec"
 )
 
-func GenerateService(specification *spec.Spec, moduleName string, swaggerPath string, generatePath string, servicesPath string) *generator.Sources {
+func GenerateService(specification *spec.Spec, jsonmode, server, moduleName, swaggerPath, generatePath, servicesPath string) *generator.Sources {
 	sources := generator.NewSources()
 
 	modules := NewModules(moduleName, generatePath, servicesPath, specification)
-	generator := NewGenerator(modules)
+	generator := NewGenerator(jsonmode, server, modules)
+
+	sources.AddGenerated(empty.GenerateEmpty(generator.Modules.Empty))
+	sources.AddGenerated(generator.EnumsHelperFunctions())
+	sources.AddGenerated(generator.ResponseHelperFunctions())
+	sources.AddGenerated(generator.CheckContentType())
+	sources.AddGenerated(generator.GenerateParamsParser())
+	sources.AddGenerated(generator.GenerateFormDataParamsParser())
+	sources.AddGenerated(generator.GenerateFormUrlencodedParamsParser())
+
+	sources.AddGeneratedAll(generator.ErrorModels(specification.HttpErrors))
+	sources.AddGeneratedAll(generator.HttpErrors(&specification.HttpErrors.Responses))
 
 	sources.AddGenerated(generator.RootRouting(specification))
-	sources.AddGeneratedAll(generator.AllStaticFiles())
-	sources.AddGenerated(generator.ErrorModels(specification.HttpErrors))
-	sources.AddGeneratedAll(generator.HttpErrors(&specification.HttpErrors.Responses))
+	sources.AddGenerated(generator.GenerateUrlParamsCtor())
 	for _, version := range specification.Versions {
 		sources.AddGeneratedAll(generator.Routings(&version))
 		sources.AddGeneratedAll(generator.ServicesInterfaces(&version))
-		sources.AddGenerated(generator.Models(&version))
+		sources.AddGeneratedAll(generator.Models(&version))
 	}
 
 	if swaggerPath != "" {

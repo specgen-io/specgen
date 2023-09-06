@@ -3,7 +3,6 @@ package models
 import (
 	"fmt"
 	"github.com/specgen-io/specgen/v2/goven/generator"
-	"github.com/specgen-io/specgen/v2/goven/java/imports"
 	"github.com/specgen-io/specgen/v2/goven/java/packages"
 	"github.com/specgen-io/specgen/v2/goven/java/types"
 	"github.com/specgen-io/specgen/v2/goven/java/writer"
@@ -54,10 +53,8 @@ func jacksonJsonPropertyAnnotation(field *spec.NamedDefinition) string {
 
 func (g *JacksonGenerator) modelObject(model *spec.NamedModel, thePackage packages.Package) *generator.CodeFile {
 	w := writer.New(thePackage, model.Name.PascalCase())
-	imports := imports.New()
-	imports.Add(g.modelsDefinitionsImports()...)
-	imports.Add(g.Types.Imports()...)
-	imports.Write(w)
+	w.Imports.Add(g.modelsDefinitionsImports()...)
+	w.Imports.Add(g.Types.Imports()...)
 	w.EmptyLine()
 	w.Line(`public class [[.ClassName]] {`)
 	for _, field := range model.Object.Fields {
@@ -107,10 +104,8 @@ func (g *JacksonGenerator) modelObject(model *spec.NamedModel, thePackage packag
 
 func (g *JacksonGenerator) modelEnum(model *spec.NamedModel, thePackage packages.Package) *generator.CodeFile {
 	w := writer.New(thePackage, model.Name.PascalCase())
-	imports := imports.New()
-	imports.Add(g.modelsDefinitionsImports()...)
-	imports.Add(g.Types.Imports()...)
-	imports.Write(w)
+	w.Imports.Add(g.modelsDefinitionsImports()...)
+	w.Imports.Add(g.Types.Imports()...)
 	w.EmptyLine()
 	w.Line(`public enum [[.ClassName]] {`)
 	for _, enumItem := range model.Enum.Items {
@@ -122,10 +117,8 @@ func (g *JacksonGenerator) modelEnum(model *spec.NamedModel, thePackage packages
 
 func (g *JacksonGenerator) modelOneOf(model *spec.NamedModel, thePackage packages.Package) *generator.CodeFile {
 	w := writer.New(thePackage, model.Name.PascalCase())
-	imports := imports.New()
-	imports.Add(g.modelsDefinitionsImports()...)
-	imports.Add(g.Types.Imports()...)
-	imports.Write(w)
+	w.Imports.Add(g.modelsDefinitionsImports()...)
+	w.Imports.Add(g.Types.Imports()...)
 	w.EmptyLine()
 	if model.OneOf.Discriminator != nil {
 		w.Line(`@JsonTypeInfo(`)
@@ -155,7 +148,7 @@ func (g *JacksonGenerator) modelOneOf(model *spec.NamedModel, thePackage package
 	return w.ToCodeFile()
 }
 
-func (g *JacksonGenerator) modelOneOfImplementation(w generator.Writer, item *spec.NamedDefinition, model *spec.NamedModel) {
+func (g *JacksonGenerator) modelOneOfImplementation(w *writer.Writer, item *spec.NamedDefinition, model *spec.NamedModel) {
 	w.Line(`class %s implements %s {`, oneOfItemClassName(item), model.Name.PascalCase())
 	w.Line(`  @JsonUnwrapped`)
 	w.Line(`  public %s data;`, g.Types.Java(&item.Type.Definition))
@@ -260,6 +253,7 @@ func (g *JacksonGenerator) JsonHelpers() []generator.CodeFile {
 
 	files = append(files, *g.json())
 	files = append(files, *g.jsonParseException())
+	files = append(files, *g.jsonWriteException())
 	files = append(files, g.setupLibrary()...)
 
 	return files
@@ -271,12 +265,12 @@ func (g *JacksonGenerator) json() *generator.CodeFile {
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.io.IOException;
+import java.io.*;
 
-public class Json {
+public class [[.ClassName]] {
 	private final ObjectMapper objectMapper;
 
-	public Json(ObjectMapper objectMapper) {
+	public [[.ClassName]](ObjectMapper objectMapper) {
 		this.objectMapper = objectMapper;
 	}
 
@@ -284,13 +278,37 @@ public class Json {
 		try {
 			return objectMapper.writeValueAsString(data);
 		} catch (Exception exception) {
-			throw new RuntimeException(exception);
+			throw new JsonWriteException(exception);
+		}
+	}
+
+	public <T> T read(String jsonStr, Class<T> type) {
+		try {
+			return objectMapper.readValue(jsonStr, type);
+		} catch (IOException exception) {
+			throw new JsonParseException(exception);
+		}
+	}
+
+	public <T> T read(Reader reader, Class<T> type) {
+		try {
+			return objectMapper.readValue(reader, type);
+		} catch (IOException exception) {
+			throw new JsonParseException(exception);
 		}
 	}
 
 	public <T> T read(String jsonStr, TypeReference<T> typeReference) {
 		try {
 			return objectMapper.readValue(jsonStr, typeReference);
+		} catch (IOException exception) {
+			throw new JsonParseException(exception);
+		}
+	}
+
+	public <T> T read(Reader reader, TypeReference<T> typeReference) {
+		try {
+			return objectMapper.readValue(reader, typeReference);
 		} catch (IOException exception) {
 			throw new JsonParseException(exception);
 		}
@@ -304,8 +322,20 @@ func (g *JacksonGenerator) jsonParseException() *generator.CodeFile {
 	w := writer.New(g.Packages.Json, `JsonParseException`)
 	w.Lines(`
 public class [[.ClassName]] extends RuntimeException {
-	public JsonParseException(Throwable exception) {
+	public [[.ClassName]](Throwable exception) {
 		super("Failed to parse body: " + exception.getMessage(), exception);
+	}
+}
+`)
+	return w.ToCodeFile()
+}
+
+func (g *JacksonGenerator) jsonWriteException() *generator.CodeFile {
+	w := writer.New(g.Packages.Json, `JsonWriteException`)
+	w.Lines(`
+public class [[.ClassName]] extends RuntimeException {
+	public [[.ClassName]](Throwable exception) {
+		super("Failed to write JSON: " + exception.getMessage(), exception);
 	}
 }
 `)
@@ -320,21 +350,22 @@ import com.fasterxml.jackson.databind.*;
 import com.fasterxml.jackson.datatype.jsr310.*;
 
 public class [[.ClassName]] {
-	public static void setup(ObjectMapper objectMapper) {
+	public static ObjectMapper setup(ObjectMapper objectMapper) {
 		objectMapper
 			.registerModule(new JavaTimeModule())
 			.configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false)
 			.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+		return objectMapper;
 	}
 }
 `)
 	return []generator.CodeFile{*w.ToCodeFile()}
 }
 
-func (g *JacksonGenerator) CreateJsonHelper(name string) string {
-	return fmt.Sprintf(`
-ObjectMapper objectMapper = new ObjectMapper();
-%s.setup(objectMapper);
-%s = new Json(objectMapper);
-`, jacksonCustomObjectMapper, name)
+func (g *JacksonGenerator) JsonMapperInit() string {
+	return fmt.Sprintf(`%s.setup(new ObjectMapper())`, jacksonCustomObjectMapper)
+}
+
+func (g *JacksonGenerator) JsonMapperType() string {
+	return `ObjectMapper`
 }

@@ -2,39 +2,86 @@ package client
 
 import (
 	"fmt"
-	"github.com/specgen-io/specgen/v2/goven/golang/common"
+	"github.com/specgen-io/specgen/v2/goven/golang/module"
 	"github.com/specgen-io/specgen/v2/goven/golang/types"
 	"github.com/specgen-io/specgen/v2/goven/spec"
 	"strings"
 )
 
-func operationSignature(operation *spec.NamedOperation, types *types.Types, apiPackage *string) string {
+func operationSignature(types *types.Types, operation *spec.NamedOperation) string {
 	return fmt.Sprintf(`%s(%s) %s`,
 		operation.Name.PascalCase(),
 		strings.Join(operationParams(types, operation), ", "),
-		operationReturn(operation, types, apiPackage),
+		operationReturn(types, operation),
 	)
 }
 
-func operationReturn(operation *spec.NamedOperation, types *types.Types, responsePackageName *string) string {
-	if common.ResponsesNumber(operation) == 1 {
-		response := operation.Responses[0]
-		return fmt.Sprintf(`(*%s, error)`, types.GoType(&response.Type.Definition))
+func operationReturn(types *types.Types, operation *spec.NamedOperation) string {
+	successResponses := operation.Responses.Success()
+	if len(successResponses) == 1 {
+		if successResponses[0].Body.Is(spec.ResponseBodyEmpty) {
+			return `error`
+		} else {
+			return fmt.Sprintf(`(*%s, error)`, types.GoType(&successResponses[0].Body.Type.Definition))
+		}
+	} else {
+		return fmt.Sprintf(`(*%s, error)`, responseTypeName(operation))
 	}
-	responseType := responseTypeName(operation)
-	if responsePackageName != nil {
-		responseType = *responsePackageName + "." + responseType
+}
+
+func operationError(operation *spec.NamedOperation, errorVar string) string {
+	successResponses := operation.Responses.Success()
+	if len(successResponses) == 1 && successResponses[0].Body.Is(spec.ResponseBodyEmpty) {
+		return errorVar
+	} else {
+		return fmt.Sprintf(`nil, %s`, errorVar)
 	}
-	return fmt.Sprintf(`(*%s, error)`, responseType)
+}
+
+func resultSuccess(response *spec.OperationResponse, resultVar string) string {
+	successResponses := response.Operation.Responses.Success()
+	if len(successResponses) == 1 {
+		if successResponses[0].Body.Is(spec.ResponseBodyEmpty) {
+			return `nil`
+		} else {
+			return fmt.Sprintf(`&%s, nil`, resultVar)
+		}
+	} else {
+		return fmt.Sprintf(`&%s, nil`, newResponse(response, resultVar))
+	}
+}
+
+func resultError(response *spec.OperationResponse, errorsModules module.Module, resultVar string) string {
+	errorBody := ``
+	if !response.Body.Is(spec.ResponseBodyEmpty) {
+		errorBody = resultVar
+	}
+	result := fmt.Sprintf(`&%s{%s}`, errorsModules.Get(response.Name.PascalCase()), errorBody)
+	successResponses := response.Operation.Responses.Success()
+	if len(successResponses) == 1 && successResponses[0].Body.Is(spec.ResponseBodyEmpty) {
+		return result
+	} else {
+		return fmt.Sprintf(`nil, %s`, result)
+	}
 }
 
 func operationParams(types *types.Types, operation *spec.NamedOperation) []string {
 	params := []string{}
-	if operation.BodyIs(spec.BodyString) {
+	if operation.BodyIs(spec.RequestBodyString) {
 		params = append(params, fmt.Sprintf("body %s", types.GoType(&operation.Body.Type.Definition)))
 	}
-	if operation.BodyIs(spec.BodyJson) {
+	if operation.BodyIs(spec.RequestBodyJson) {
 		params = append(params, fmt.Sprintf("body *%s", types.GoType(&operation.Body.Type.Definition)))
+	}
+	if operation.BodyIs(spec.RequestBodyFormData) {
+		for _, param := range operation.Body.FormData {
+			params = append(params, fmt.Sprintf("%s %s", param.Name.CamelCase(), types.GoType(&param.Type.Definition)))
+		}
+	}
+	if operation.BodyIs(spec.RequestBodyFormUrlEncoded) {
+		for _, param := range operation.Body.FormUrlEncoded {
+			params = append(params, fmt.Sprintf("%s %s", param.Name.CamelCase(), types.GoType(&param.Type.Definition)))
+		}
 	}
 	for _, param := range operation.QueryParams {
 		params = append(params, fmt.Sprintf("%s %s", param.Name.CamelCase(), types.GoType(&param.Type.Definition)))

@@ -7,12 +7,12 @@ import (
 )
 
 func getApiCallParamsObject(operation *spec.NamedOperation) string {
-	if operation.Body == nil && !operation.HasParams() {
+	if operation.BodyIs(spec.RequestBodyEmpty) && !operation.HasParams() {
 		return ""
 	}
 
 	apiCallParams := []string{}
-	if operation.Body != nil {
+	if operation.BodyIs(spec.RequestBodyString) || operation.BodyIs(spec.RequestBodyJson) {
 		apiCallParams = append(apiCallParams, "body")
 	}
 	if len(operation.Endpoint.UrlParams) > 0 {
@@ -30,7 +30,7 @@ func getApiCallParamsObject(operation *spec.NamedOperation) string {
 }
 
 func serviceCall(operation *spec.NamedOperation, paramsObject string) string {
-	if len(operation.Responses) == 1 && operation.Responses[0].Definition.Type.Definition.IsEmpty() {
+	if len(operation.Responses) == 1 && operation.Responses[0].Body.IsEmpty() {
 		return fmt.Sprintf("await service.%s(%s)", operation.Name.CamelCase(), paramsObject)
 	}
 	return fmt.Sprintf("const result = await service.%s(%s)", operation.Name.CamelCase(), paramsObject)

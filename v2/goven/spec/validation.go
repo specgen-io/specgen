@@ -89,7 +89,7 @@ func (validator *validator) Operation(operation *NamedOperation) {
 	validator.Params(operation.QueryParams, true)
 	validator.Params(operation.HeaderParams, true)
 
-	if operation.Body != nil && !operation.Body.Type.Definition.IsEmpty() {
+	if !operation.BodyIs(RequestBodyEmpty) && operation.Body.Type != nil {
 		bodyType := operation.Body.Type
 		if bodyType.Definition.Info.Structure != StructureObject &&
 			bodyType.Definition.Info.Structure != StructureArray &&
@@ -97,7 +97,9 @@ func (validator *validator) Operation(operation *NamedOperation) {
 			message := fmt.Sprintf("body should be object, array or string type, found %s", bodyType.Definition.Name)
 			validator.addError(operation.Body.Location, message)
 		}
-		validator.Definition(operation.Body)
+	}
+	if operation.Body != nil {
+		validator.RequestBody(operation.Body)
 	}
 
 	for index := range operation.Responses {
@@ -106,26 +108,26 @@ func (validator *validator) Operation(operation *NamedOperation) {
 }
 
 func (validator *validator) OperationResponse(response *OperationResponse) {
-	if response.Name.Source == HttpStatusInternalServerError || response.Name.Source == HttpStatusNotFound || response.Name.Source == HttpStatusBadRequest {
-		errors := response.Operation.InApi.InHttp.InVersion.InSpec.HttpErrors
-		errorResponse := errors.Responses.GetByStatusName(response.Name.Source)
-		if response.Type.Definition.String() != errorResponse.Type.Definition.String() {
-			messageFormat :=
-				`response %s is recommended to have standard error type "%s", if declared, found: "%s", ` +
-					`error responses should be declared on individual endpoint only if "business" logic is going to return them, ` +
-					`all errors from generated code are automatically attached to all endpoints`
-			message := fmt.Sprintf(messageFormat, response.Name.Source, errorResponse.Type.Definition.String(), response.Type.Definition.String())
-			validator.addWarning(response.Type.Location, message)
+	if response.IsError() { //TODO: Check this logic
+		specification := response.Operation.InApi.InHttp.InVersion.InSpec
+		errorResponse := specification.HttpErrors.Responses.GetByStatusName(response.Name.Source)
+		if errorResponse == nil {
+			validator.addError(response.Name.Location, fmt.Sprintf(`response %s is declared in the operation but it's not declared in errors section`, response.Name.Source))
+		} else {
+			if response.Body.String() != errorResponse.Body.String() {
+				messageFormat := `response %s is declared with body type: %s, however errors section declares it with body type: %s`
+				message := fmt.Sprintf(messageFormat, response.Name.Source, response.Body.String(), errorResponse.Body.String())
+				validator.addError(response.Body.Location, message)
+			}
 		}
 	}
-	if !response.Type.Definition.IsEmpty() &&
-		response.Type.Definition.Info.Structure != StructureObject &&
-		response.Type.Definition.Info.Structure != StructureArray &&
-		response.Type.Definition.String() != TypeString {
-		message := fmt.Sprintf("response %s should be either empty or some type with structure of an object or array, found %s", response.Name.Source, response.Type.Definition.Name)
-		validator.addError(response.Type.Location, message)
+	if response.Body.IsJson() &&
+		response.Body.Type.Definition.Info.Structure != StructureObject &&
+		response.Body.Type.Definition.Info.Structure != StructureArray {
+		message := fmt.Sprintf("response %s should be either empty or some type with structure of an object or array, found %s", response.Name.Source, response.Body.Type.Definition.Name)
+		validator.addError(response.Body.Type.Location, message)
 	}
-	validator.Definition(&response.Definition)
+	validator.ResponseBody(&response.Body)
 }
 
 func (validator *validator) Params(params []NamedParam, allowArrayTypes bool) {
@@ -290,4 +292,10 @@ func enumContainsItem(enum *Enum, what string) bool {
 }
 
 func (validator *validator) Definition(definition *Definition) {
+}
+
+func (validator *validator) RequestBody(body *RequestBody) {
+}
+
+func (validator *validator) ResponseBody(body *ResponseBody) {
 }

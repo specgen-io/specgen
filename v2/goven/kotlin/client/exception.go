@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/specgen-io/specgen/v2/goven/generator"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/packages"
-	"github.com/specgen-io/specgen/v2/goven/kotlin/types"
 	"github.com/specgen-io/specgen/v2/goven/kotlin/writer"
 	"github.com/specgen-io/specgen/v2/goven/spec"
 )
@@ -14,7 +13,7 @@ func clientException(thePackage packages.Package) *generator.CodeFile {
 	w.Lines(`
 import java.lang.RuntimeException
 
-open class ClientException : RuntimeException {
+open class [[.ClassName]] : RuntimeException {
 	constructor() : super()
 	constructor(message: String) : super(message)
 	constructor(cause: Throwable) : super(cause)
@@ -24,18 +23,28 @@ open class ClientException : RuntimeException {
 	return w.ToCodeFile()
 }
 
-func inheritedClientException(thePackage, errorsModelsPackage packages.Package, types *types.Types, error *spec.Response) *generator.CodeFile {
-	errorName := types.Kotlin(&error.Type.Definition)
-	className := fmt.Sprintf(`%sException`, errorName)
-	w := writer.New(thePackage, className)
-	w.Template(
-		map[string]string{
-			`ErrorsModelsPackage`: errorsModelsPackage.PackageName,
-			`ErrorName`:           errorName,
-		}, `
-import [[.ErrorsModelsPackage]].*
+func responseException(thePackage packages.Package) *generator.CodeFile {
+	w := writer.New(thePackage, `ResponseException`)
+	w.Lines(`
+import java.lang.RuntimeException
 
-class [[.ClassName]](error: [[.ErrorName]]) : ClientException("Body: $error")
+open class [[.ClassName]](message: String) : RuntimeException(message)
 `)
 	return w.ToCodeFile()
+}
+
+func errorResponseException(thePackage, errorsModelsPackage packages.Package, error *spec.Response) *generator.CodeFile {
+	w := writer.New(thePackage, errorExceptionClassName(error))
+	w.Imports.PackageStar(errorsModelsPackage)
+	errorBody := ""
+	if !error.Body.Is(spec.ResponseBodyEmpty) {
+		errorBody = fmt.Sprintf(`(val body: %s)`, error.Body.Type.Definition)
+	}
+	w.Line(`class [[.ClassName]]%s : ResponseException("Error response with status code %s")`, errorBody, spec.HttpStatusCode(error.Name))
+
+	return w.ToCodeFile()
+}
+
+func errorExceptionClassName(error *spec.Response) string {
+	return fmt.Sprintf(`%sException`, error.Name.PascalCase())
 }
